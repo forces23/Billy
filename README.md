@@ -90,6 +90,9 @@ Billy/
 ├── profile/
 │   ├── career.json
 │   └── career.example.json
+├── scripts/
+│   ├── discord/
+│   └── google/
 ├── data/
 ├── docs/
 ├── .env.example
@@ -146,9 +149,9 @@ Classifications below the threshold for their action continue through normal dra
 ### Prerequisites
 
 - A supported Node.js LTS release
-- A Google Cloud OAuth client with access to the Gmail API
+- A Google Cloud OAuth client with access to the Gmail API — see the [Gmail API integration guide](docs/guides/google/gmail-api-integration.md)
 - An OpenRouter API key
-- A Discord application and bot
+- A Discord application and bot — see the [Discord bot and approval channel guide](docs/guides/discord/discord-bot-setup.md)
 
 ### Install
 
@@ -191,6 +194,37 @@ LOG_LEVEL=<info>
 ```
 
 The angle-bracketed values are examples. Remove the brackets when creating `.env`.
+
+`.env` is ignored by Git, as is everything in `SECRETS/`. Only `.env.example` is committed.
+
+### Generate a Gmail refresh token
+
+Billy polls Gmail with no user present, so it needs an offline-access refresh token. Download the OAuth client JSON from Google Cloud to `SECRETS/credentials-google-Billy-local.json`, then run:
+
+```bash
+node scripts/google/generate-gmail-refresh-token.mjs
+```
+
+The browser consent flow opens, and the script prints the token to copy into `GOOGLE_REFRESH_TOKEN`. While the OAuth app is in Testing, Google expires the authorization after seven days; rerun the script to get a new token. The client ID and secret stay the same.
+
+### Create the career profile
+
+`PROFILE_CAREER_PATH` points at a file that is not in the repository — `profile/` is gitignored apart from the example. Copy it and fill in real details:
+
+```bash
+cp profile/career.example.json profile/career.json
+```
+
+The loader requires `schemaVersion: 1` and rejects a malformed profile at startup. Contact details are excluded from model prompts by default, and the profile is only loaded for high-confidence recruiter opportunities and qualification questions.
+
+### Verify credentials
+
+Both scripts read the values from `.env` and fail loudly if something is missing or unauthorized:
+
+```bash
+node scripts/google/verify-gmail-credentials.mjs
+node scripts/discord/verify-discord-credentials.mjs
+```
 
 ### Development commands
 
