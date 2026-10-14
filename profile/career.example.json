@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "profileId": "<your-profile-id>",
+  "verifiedAt": "<YYYY-MM-DD>",
+  "identity": {
+    "fullName": "<your-full-name>",
+    "professionalTitle": "<your-professional-title>",
+    "location": {
+      "city": "<your-city>",
+      "state": "<your-state-or-region>",
+      "country": "<your-country>"
+    }
+  },
+  "contact": {
+    "email": "<your-email-address>",
+    "phone": "<your-phone-number>",
+    "linkedinUrl": null,
+    "portfolioUrl": null,
+    "githubUrl": null
+  },
+  "professionalSummary": "<your-professional-summary>",
+  "workExperience": [
+    {
+      "id": "<unique-role-id>",
+      "company": "<company-name>",
+      "companyRelationship": null,
+      "title": "<job-title>",
+      "location": {
+        "city": "<city>",
+        "state": "<state-or-region>",
+        "country": "<country>"
+      },
+      "startDate": "<YYYY-or-YYYY-MM>",
+      "endDate": null,
+      "isCurrent": true,
+      "clients": [],
+      "highlights": [
+        "<verified-accomplishment-or-responsibility>"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "id": "<unique-education-id>",
+      "institution": "<institution-name>",
+      "degree": "<degree>",
+      "fieldOfStudy": "<field-of-study>",
+      "location": {
+        "city": "<city>",
+        "state": "<state-or-region>",
+        "country": "<country>"
+      },
+      "startDate": "<YYYY>",
+      "endDate": "<YYYY>"
+    }
+  ],
+  "skills": {
+    "<skill-category>": [
+      "<verified-skill>"
+    ]
+  },
+  "projects": [
+    {
+      "id": "<unique-project-id>",
+      "name": "<project-name>",
+      "technologies": [
+        "<technology>"
+      ],
+      "highlights": [
+        "<verified-project-accomplishment>"
+      ],
+      "url": null
+    }
+  ],
+  "certifications": [
+    {
+      "id": "<unique-certification-id>",
+      "name": "<certification-name>",
+      "issuer": "<issuer-name>",
+      "issuedDate": null,
+      "expirationDate": null,
+      "credentialId": null,
+      "credentialUrl": null
+    }
+  ]
+}
