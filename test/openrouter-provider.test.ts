@@ -69,6 +69,10 @@ test("OpenRouter provider requests structured output and parses a draft", async 
     "json_schema",
   );
   assert.match(JSON.stringify(requestBody?.messages), /This full message/);
+  assert.match(
+    JSON.stringify(requestBody?.messages),
+    /I am available between 9:30 AM and 10 AM/,
+  );
   assert.equal(
     reply.body,
     "Thanks for reaching out.\n\nKind Regards,\nBobby Lawson",
@@ -77,6 +81,33 @@ test("OpenRouter provider requests structured output and parses a draft", async 
   assert.equal(reply.resolvedModel, "test/resolved-model");
   assert.equal(reply.promptTokens, 120);
   assert.equal(reply.completionTokens, 30);
+});
+
+test("OpenRouter provider removes em dashes from generated email bodies", async () => {
+  const provider = new OpenRouterAiProvider(pino({ level: "silent" }), {
+    apiKey: "test-key",
+    model: "test/model",
+    timeoutMilliseconds: 1_000,
+    maxOutputTokens: 500,
+    fetchImplementation: async () =>
+      completionResponse(
+        "No problem—1:00 PM CDT works for me.\n\nKind Regards,\nBobby Lawson",
+        "",
+      ),
+  });
+
+  const reply = await provider.generateReply({
+    from: "recruiter@example.com",
+    subject: "Updated interview time",
+    body: "Can you do 1 PM CDT instead?",
+  });
+
+  assert.equal(
+    reply.body,
+    "No problem - 1 PM CDT works for me.\n\nKind Regards,\nBobby Lawson",
+  );
+  assert.doesNotMatch(reply.body, /—/);
+  assert.doesNotMatch(reply.body, /1:00 PM/);
 });
 
 test("OpenRouter provider retries transient failures at most three times", async () => {

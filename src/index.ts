@@ -5,18 +5,27 @@ import logger from "./config/logger.js";
 import { ApprovalWorkflow } from "./core/approval-workflow.js";
 import { CareerProfileLoader } from "./core/career-profile-loader.js";
 import { EmailProcessor } from "./core/email-processor.js";
+import { AvailabilityService } from "./core/availability-service.js";
+import { SchedulingWorkflow } from "./core/scheduling-workflow.js";
 import { RecipientResolver } from "./core/recipient-resolver.js";
 import { createDatabase } from "./database/connection.js";
 import { SqliteApprovalRepository } from "./database/repositories/approval-repository.js";
 import { SqliteDraftRepository } from "./database/repositories/draft-repository.js";
+import { SqliteConversationRepository } from "./database/repositories/conversation-repository.js";
+import { SqliteCalendarEventRepository } from "./database/repositories/calendar-event-repository.js";
 import { SqliteEmailRepository } from "./database/repositories/email-repository.js";
 import { SqlitePollCheckpointRepository } from "./database/repositories/poll-checkpoint-repository.js";
+import { SqliteSchedulingRepository } from "./database/repositories/scheduling-repository.js";
 import { createDiscordClient } from "./integrations/discord/client.js";
 import { DiscordEmailApprovalService } from "./integrations/discord/email-approval-service.js";
 import { createGmailClient } from "./integrations/gmail/client.js";
 import { GmailEmailProvider } from "./integrations/gmail/gmail-provider.js";
+import { GoogleCalendarProvider } from "./integrations/google/calendar-provider.js";
 import { OpenRouterAiProvider } from "./integrations/openrouter/openrouter-provider.js";
 import { OpenRouterEmailClassifier } from "./integrations/openrouter/email-classifier.js";
+import { OpenRouterSchedulingInterpreter } from "./integrations/openrouter/scheduling-interpreter.js";
+import { OpenRouterSchedulingReplyInterpreter } from "./integrations/openrouter/scheduling-reply-interpreter.js";
+import { CalendarEventWorkflow } from "./core/calendar-event-workflow.js";
 import { GmailPoller } from "./jobs/gmail-poller.js";
 import { EmailSender } from "./jobs/email-sender.js";
 
@@ -53,6 +62,9 @@ async function main(): Promise<void> {
             ownAddresses: env.gmail.ownAddresses,
             trustedForwarderAddresses: env.gmail.trustedForwarderAddresses,
         });
+        const schedulingRepository = new SqliteSchedulingRepository(database);
+        const conversationRepository = new SqliteConversationRepository(database);
+        const calendarEventRepository = new SqliteCalendarEventRepository(database);
         const aiProvider = new OpenRouterAiProvider(logger, {
             apiKey: env.openRouter.apiKey,
             model: env.openRouter.model,
@@ -70,6 +82,59 @@ async function main(): Promise<void> {
         const careerContextProvider = new CareerProfileLoader(
             env.profile.careerPath,
         );
+        const calendarProvider = new GoogleCalendarProvider(
+            env.google,
+            env.calendar.calendars,
+            env.calendar.billyCalendarId,
+        );
+        const availabilityService = new AvailabilityService(
+            calendarProvider,
+            env.calendar,
+        );
+        const schedulingInterpreter = new OpenRouterSchedulingInterpreter(
+            logger,
+            {
+                apiKey: env.openRouter.apiKey,
+                model: env.openRouter.classifierModel,
+                timeoutMilliseconds: env.openRouter.timeoutMilliseconds,
+                maxOutputTokens: env.openRouter.schedulingMaxOutputTokens,
+                reasoningEffort: env.openRouter.classifierReasoningEffort,
+            },
+        );
+        const schedulingReplyInterpreter = new OpenRouterSchedulingReplyInterpreter(
+            logger,
+            {
+                apiKey: env.openRouter.apiKey,
+                model: env.openRouter.classifierModel,
+                timeoutMilliseconds: env.openRouter.timeoutMilliseconds,
+                maxOutputTokens: env.openRouter.schedulingMaxOutputTokens,
+                reasoningEffort: env.openRouter.classifierReasoningEffort,
+            },
+        );
+        const schedulingWorkflow = new SchedulingWorkflow(
+            schedulingInterpreter,
+            availabilityService,
+            schedulingRepository,
+            emailProvider,
+            draftRepository,
+            aiProvider,
+            recipientResolver,
+            logger,
+            env.calendar.timeZone,
+            {
+                replyInterpreter: schedulingReplyInterpreter,
+                conversationRepository,
+                calendarEventRepository,
+                emailRepository,
+            },
+        );
+        const calendarEventWorkflow = new CalendarEventWorkflow(
+            calendarEventRepository,
+            calendarProvider,
+            availabilityService,
+            schedulingRepository,
+            conversationRepository,
+        );
         const emailProcessor = new EmailProcessor(
             emailProvider,
             emailRepository,
@@ -80,6 +145,8 @@ async function main(): Promise<void> {
                 recipientResolver,
                 classifier: emailClassifier,
                 careerContextProvider,
+                schedulingWorkflow,
+                conversationRepository,
             },
         );
         const approvalWorkflow = new ApprovalWorkflow(
@@ -89,7 +156,11 @@ async function main(): Promise<void> {
             aiProvider,
             recipientResolver,
             logger,
-            { emailRepository, careerContextProvider },
+            {
+                emailRepository,
+                careerContextProvider,
+                schedulingGuard: schedulingWorkflow,
+            },
         );
         const discordService = new DiscordEmailApprovalService(
             createDiscordClient(),
@@ -100,6 +171,11 @@ async function main(): Promise<void> {
             approvalWorkflow,
             emailProcessor,
             recipientResolver,
+            schedulingRepository,
+            schedulingWorkflow,
+            conversationRepository,
+            calendarEventRepository,
+            calendarEventWorkflow,
             logger,
             {
                 botToken: env.discord.botToken,
@@ -128,6 +204,8 @@ async function main(): Promise<void> {
             {
                 intervalMilliseconds:
                     env.gmail.sendIntervalSeconds * 1_000,
+                schedulingGuard: schedulingWorkflow,
+                conversationRepository,
             },
         );
 

@@ -9,12 +9,16 @@ import type {
 } from "../interfaces/email-provider.js";
 import type { EmailRepository } from "../interfaces/email-repository.js";
 import type { RecipientResolver } from "../core/recipient-resolver.js";
+import type { SchedulingGuard } from "../interfaces/scheduling-repository.js";
+import type { ConversationRepository } from "../interfaces/conversation-repository.js";
 
 const SEND_BATCH_SIZE = 25;
 const MAX_STORED_ERROR_LENGTH = 500;
 
 export interface EmailSenderOptions {
   intervalMilliseconds: number;
+  schedulingGuard?: SchedulingGuard;
+  conversationRepository?: ConversationRepository;
 }
 
 export class EmailSender {
@@ -25,6 +29,8 @@ export class EmailSender {
   readonly #recipientResolver: RecipientResolver;
   readonly #logger: Logger;
   readonly #intervalMilliseconds: number;
+  readonly #schedulingGuard: SchedulingGuard | undefined;
+  readonly #conversationRepository: ConversationRepository | undefined;
 
   constructor(
     emailProvider: EmailProvider & OutboundEmailProvider,
@@ -49,6 +55,8 @@ export class EmailSender {
     this.#recipientResolver = recipientResolver;
     this.#logger = logger.child({ component: "email-sender" });
     this.#intervalMilliseconds = options.intervalMilliseconds;
+    this.#schedulingGuard = options.schedulingGuard;
+    this.#conversationRepository = options.conversationRepository;
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -77,12 +85,17 @@ export class EmailSender {
     );
 
     for (const email of pending) {
+      let sentProviderMessageId: string | undefined;
       const claimed = await this.#emailRepository.transitionStatus(
         email.providerMessageId,
         "approved",
         "sending",
       );
       if (!claimed) continue;
+      await this.#conversationRepository?.setStatusByProviderMessageId(
+        email.providerMessageId,
+        "sending",
+      );
 
       try {
         const decision = await this.#approvalRepository.findDecision(
@@ -95,6 +108,14 @@ export class EmailSender {
         const draft = await this.#draftRepository.findById(decision.draftId);
         if (!draft || draft.providerMessageId !== email.providerMessageId) {
           throw new Error("Approved email draft could not be loaded");
+        }
+        if (
+          this.#schedulingGuard &&
+          !(await this.#schedulingGuard.validateDraft(draft.id))
+        ) {
+          throw new Error(
+            "The selected scheduling slot is no longer available; the email was not sent",
+          );
         }
 
         const original = await this.#emailProvider.getMessage(
@@ -115,6 +136,7 @@ export class EmailSender {
               }
             : {}),
         });
+        sentProviderMessageId = sent.providerMessageId;
         const saved = await this.#emailRepository.markSent(
           email.providerMessageId,
           sent.providerMessageId,
@@ -122,6 +144,14 @@ export class EmailSender {
         if (!saved) {
           throw new Error("Sent email state could not be persisted");
         }
+        const scheduling = this.#schedulingGuard
+          ? await this.#schedulingGuard.getDraftContext(draft.id)
+          : undefined;
+        await this.#conversationRepository?.setStatusByProviderMessageId(
+          email.providerMessageId,
+          scheduling ? "awaiting_recruiter_confirmation" : "sent",
+        );
+        await this.#schedulingGuard?.onDraftSent(draft.id);
 
         this.#logger.info(
           {
@@ -137,6 +167,18 @@ export class EmailSender {
           "Sent an approved Gmail reply",
         );
       } catch (error: unknown) {
+        if (sentProviderMessageId) {
+          this.#logger.error(
+            {
+              err: error,
+              providerMessageId: email.providerMessageId,
+              sentProviderMessageId,
+            },
+            "Gmail reply was sent, but Billy could not finalize local state",
+          );
+          continue;
+        }
+
         const message = errorMessage(error);
         await this.#emailRepository.markFailed(
           email.providerMessageId,
@@ -147,6 +189,10 @@ export class EmailSender {
             technicalMessage: message,
             userMessage: gmailFailureMessage(error),
           },
+        );
+        await this.#conversationRepository?.setStatusByProviderMessageId(
+          email.providerMessageId,
+          "failed",
         );
         this.#logger.error(
           { err: error, providerMessageId: email.providerMessageId },

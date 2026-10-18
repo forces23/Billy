@@ -73,6 +73,25 @@ Are you available next week?`,
   assert.equal(result.requiresManualRecipients, false);
 });
 
+test("recipient resolver removes forward prefixes from the original subject", () => {
+  const result = resolver.resolve(
+    message({
+      from: "Bobby Personal <personal@example.com>",
+      to: ["blawsonhq@gmail.com"],
+      cc: [],
+      subject: "Fwd: Fw: Interview opportunity",
+      textBody: `---------- Forwarded message ---------
+From: Original Recruiter <original@example.com>
+Subject: Fwd: Interview opportunity
+
+Are you available next week?`,
+    }),
+  );
+
+  assert.equal(result.subject, "Interview opportunity");
+  assert.equal(result.body, "Are you available next week?");
+});
+
 test("recipient resolver requires manual recipients for an ambiguous trusted forward", () => {
   const result = resolver.resolve(
     message({

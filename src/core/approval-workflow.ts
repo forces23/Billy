@@ -16,12 +16,14 @@ import type { DraftRepository, StoredDraft } from "../interfaces/draft-repositor
 import type { EmailProvider } from "../interfaces/email-provider.js";
 import type { EmailRepository } from "../interfaces/email-repository.js";
 import { determineEmailRoutingAction } from "./email-routing-policy.js";
+import type { SchedulingGuard } from "../interfaces/scheduling-repository.js";
 
 const MAX_STORED_ERROR_LENGTH = 500;
 
 export interface ApprovalWorkflowOptions {
   emailRepository?: EmailRepository;
   careerContextProvider?: CareerContextProvider;
+  schedulingGuard?: SchedulingGuard;
 }
 
 export type ApprovalResult =
@@ -35,6 +37,10 @@ export type ApprovalResult =
     }
   | {
       outcome: "already_resolved";
+    }
+  | {
+      outcome: "schedule_conflict";
+      providerMessageId: string;
     };
 
 export interface RevisionResult {
@@ -51,6 +57,7 @@ export class ApprovalWorkflow {
   readonly #logger: Logger;
   readonly #emailRepository: EmailRepository | undefined;
   readonly #careerContextProvider: CareerContextProvider | undefined;
+  readonly #schedulingGuard: SchedulingGuard | undefined;
 
   constructor(
     emailProvider: EmailProvider,
@@ -69,6 +76,7 @@ export class ApprovalWorkflow {
     this.#logger = logger.child({ component: "approval-workflow" });
     this.#emailRepository = options.emailRepository;
     this.#careerContextProvider = options.careerContextProvider;
+    this.#schedulingGuard = options.schedulingGuard;
   }
 
   async approve(
@@ -79,6 +87,16 @@ export class ApprovalWorkflow {
   ): Promise<ApprovalResult> {
     const draft = await this.#draftRepository.findById(draftId);
     if (!draft) return { outcome: "already_resolved" };
+
+    if (
+      this.#schedulingGuard &&
+      !(await this.#schedulingGuard.validateDraft(draftId))
+    ) {
+      return {
+        outcome: "schedule_conflict",
+        providerMessageId: draft.providerMessageId,
+      };
+    }
 
     const message = await this.#emailProvider.getMessage(
       draft.providerMessageId,
@@ -167,6 +185,8 @@ export class ApprovalWorkflow {
       const trustedCareerContext = await this.#careerContextForRevision(
         sourceDraft.providerMessageId,
       );
+      const trustedSchedulingContext =
+        await this.#schedulingGuard?.getDraftContext(sourceDraftId);
       const generatedReply = await this.#aiProvider.generateReply(
         {
           from:
@@ -174,6 +194,7 @@ export class ApprovalWorkflow {
           subject: context.subject,
           body: context.body,
           ...(trustedCareerContext ? { trustedCareerContext } : {}),
+          ...(trustedSchedulingContext ? { trustedSchedulingContext } : {}),
           revision: {
             previousDraft: sourceDraft.body,
             instructions: request.instructions,
@@ -188,6 +209,13 @@ export class ApprovalWorkflow {
 
       if (!draft) {
         throw new Error("The email was resolved before the revision completed");
+      }
+
+      if (
+        this.#schedulingGuard &&
+        !(await this.#schedulingGuard.linkRevision(sourceDraftId, draft.id))
+      ) {
+        throw new Error("The scheduling revision could not be linked to its calendar check");
       }
 
       const completed = await this.#approvalRepository.completeRevisionRequest(

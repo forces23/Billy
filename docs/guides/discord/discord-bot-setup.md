@@ -18,7 +18,7 @@ By the end of the guide, you will have:
 - One or more authorized reviewer user IDs stored in `.env`
 - A successful connection and message test
 
-The Discord bot will eventually post each generated draft with buttons tied to that exact draft ID and revision. Approving revision 1 will still select revision 1 even if Billy later generates revision 2.
+Billy posts one compact parent card per actionable Gmail thread. The card opens a Discord thread containing the full incoming messages, generated drafts, scheduling cards, and controls. Every draft button remains tied to its exact draft ID and revision.
 
 ## Before you start
 
@@ -100,13 +100,13 @@ The **Application ID** shown on this page identifies the application. Billy does
 7. Find **Public Bot** and turn it off.
 8. Leave **Requires OAuth2 Code Grant** turned off.
 9. Scroll to **Privileged Gateway Intents**.
-10. Leave these intents turned off:
+10. Configure privileged intents as follows:
 
-- Presence Intent
-- Server Members Intent
-- Message Content Intent
+- Leave **Presence Intent** off.
+- Leave **Server Members Intent** off.
+- Turn **Message Content Intent** on so Billy can understand authorized follow-up messages inside scheduling threads.
 
-Billy only needs the standard `Guilds` gateway intent. Button clicks arrive as Discord interactions, so the bot does not need permission to read ordinary chat messages.
+Billy listens only in scheduling threads it created and still checks `DISCORD_APPROVER_USER_IDS` before acting on a message.
 
 Turning off **Public Bot** means only the application owner or a member of its developer team can add the bot to a server. This is appropriate for Billy's private installation.
 
@@ -153,7 +153,9 @@ Discord may show a token only once. If you lose it, reset it and update `.env`. 
    - **Send Messages** under Text Permissions
    - **Embed Links** under Text Permissions
    - **Read Message History** under Text Permissions
-9. Confirm the generated permissions integer is `84992`.
+   - **Create Public Threads** under Text Permissions
+   - **Send Messages in Threads** under Text Permissions
+9. Confirm the generated permissions integer is `309237730304`.
 10. Copy the generated authorization URL at the bottom of the page.
 
 Do not give Billy the **Administrator** permission. It is not needed.
@@ -168,9 +170,11 @@ The four selected permissions produce this bitfield:
 | Send Messages        |  `2048` |
 | Embed Links          | `16384` |
 | Read Message History | `65536` |
-| **Total**      | `84992` |
+| Create Public Threads | `34359738368` |
+| Send Messages in Threads | `274877906944` |
+| **Total**      | `309237730304` |
 
-Discord places that total in the generated URL as `permissions=84992`. It is only an installation-time permission request; do not add it to `.env` or Billy's runtime configuration.
+Discord places that total in the generated URL as `permissions=309237730304`. It is only an installation-time permission request; do not add it to `.env` or Billy's runtime configuration.
 
 These permissions serve specific purposes:
 
@@ -180,6 +184,8 @@ These permissions serve specific purposes:
 | Send Messages        | Post draft approval requests and status updates                    |
 | Embed Links          | Format email and draft details in readable embeds                  |
 | Read Message History | Find, update, or disable earlier approval messages after a restart |
+| Create Public Threads | Create one focused conversation for each actionable Gmail thread |
+| Send Messages in Threads | Post full messages and controls and answer authorized scheduling questions |
 
 Billy does not initially need Manage Messages, Manage Channels, Manage Roles, Attach Files, or permission to mention everyone.
 
@@ -213,6 +219,8 @@ For a private channel, installation alone may not grant channel access:
    - Send Messages
    - Embed Links
    - Read Message History
+   - Create Public Threads
+   - Send Messages in Threads
 7. Save the changes.
 
 Keep **View Channel** denied for `@everyone` because `#billy-emails` may contain private email data.
@@ -386,27 +394,30 @@ The test briefly posts an embed in `#billy-emails`, then deletes its own message
 }
 ```
 
-This test uses only the `Guilds` intent—the same gateway access Billy needs for buttons and channel operations. The current `discord.js` client setup is documented in the [`discord.js` v14 reference](https://discord.js.org/docs/packages/discord.js/14).
+The credential test uses only the `Guilds` intent because it does not read scheduling conversations. Billy's runtime additionally uses `GuildMessages` and `MessageContent`. The current `discord.js` client setup is documented in the [`discord.js` v14 reference](https://discord.js.org/docs/packages/discord.js/14).
 
 ## 12. Understand the approval flow
 
 The implemented workflow is:
 
 1. Gmail polling discovers a new message.
-2. OpenRouter generates a reply draft.
-3. SQLite stores that draft as an immutable revision.
-4. Billy calculates Reply and Reply All recipients, including one-level trusted-forward handling.
-5. Billy posts the context, recipients, complete draft, and controls to `#billy-emails`.
-6. **Approve Reply** or **Approve Reply All** selects that exact revision and recipient list.
-7. **Reject w/comments** generates another immutable revision while older versions remain approvable.
-8. **Do not reply** ends the workflow without sending an email.
-9. Billy verifies that every action came from a user in `DISCORD_APPROVER_USER_IDS`.
-10. Approved drafts are queued for Gmail, and the selected draft card updates to **Sending**, **Sent successfully**, or **Sending failed**.
-11. If all automatic OpenRouter attempts fail, Billy posts a failure card with a **Retry Generation** button for authorized reviewers.
+2. Billy classifies the message and generates a factual one-sentence summary.
+3. For actionable mail, Billy posts one compact parent card in `#billy-emails` with the subject, summary, status, and **Open thread** link.
+4. The thread contains the complete incoming email (including attachment metadata) and the generated reply or scheduling controls.
+5. SQLite stores every generated draft and availability card as an immutable revision.
+6. Billy calculates Reply and Reply All recipients, including one-level trusted-forward handling.
+7. **Approve Reply** or **Approve Reply All** selects that exact revision and recipient list.
+8. **Reject w/comments** generates another immutable revision while older versions remain approvable.
+9. **Do not reply** ends the workflow without sending an email.
+10. Billy verifies that every action came from a user in `DISCORD_APPROVER_USER_IDS`, including actions inside the thread.
+11. Approved drafts are queued for Gmail, and both the draft and parent status progress through sending and completion.
+12. Scheduling follow-ups create new availability cards in the same thread; earlier cards do not get rewritten while alternatives are explored.
+13. After a recruiter confirms the selected time, a separate card requests approval to create the event on Billy's Google Calendar.
+14. If all automatic OpenRouter attempts fail, Billy posts a failure card with a **Retry Generation** button for authorized reviewers.
 
 Channel membership is not the final authorization check. Billy must also compare the clicking user's numeric ID against the allowlist. This prevents another server member with accidental channel access from approving an email.
 
-Discord buttons are interactions, not ordinary chat messages. This is why Billy does not need the Message Content privileged intent.
+Discord buttons are interactions, but the natural-language scheduling follow-ups are ordinary thread messages. Billy therefore requires the Message Content privileged intent even though the draft-approval buttons themselves do not.
 
 ## 13. Understand when the bot is online
 

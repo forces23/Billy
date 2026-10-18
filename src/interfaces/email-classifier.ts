@@ -15,6 +15,7 @@ export interface EmailClassification {
   category: EmailCategory;
   confidence: number;
   reason: string;
+  summary: string;
   requestedModel: string;
   resolvedModel: string;
   providerResponseId: string;

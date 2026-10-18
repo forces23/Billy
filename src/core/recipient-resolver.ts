@@ -172,7 +172,9 @@ export class RecipientResolver {
       ],
       excluded,
     );
-    const subject = firstHeader(forwarded.headers, "subject") ?? message.subject;
+    const subject = stripForwardSubjectPrefixes(
+      firstHeader(forwarded.headers, "subject") ?? message.subject,
+    );
 
     return {
       source: "forwarded",
@@ -198,13 +200,19 @@ function emptyForwardedContext(
     source: "forwarded",
     forwardedBy: outerSender,
     from: [],
-    subject: message.subject,
+    subject: stripForwardSubjectPrefixes(message.subject),
     body: message.textBody,
     reply: { to: [], cc: [] },
     replyAll: { to: [], cc: [] },
     requiresManualRecipients: true,
     warnings,
   };
+}
+
+function stripForwardSubjectPrefixes(subject: string): string {
+  const normalized = subject.replaceAll(/[\r\n]+/g, " ").trim();
+  const stripped = normalized.replace(/^(?:(?:fwd?|wg)\s*:\s*)+/i, "").trim();
+  return stripped || normalized;
 }
 
 function buildRecipientSet(

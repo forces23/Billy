@@ -33,6 +33,7 @@ interface EmailRow {
   classification_category: EmailCategory | null;
   classification_confidence: number | null;
   classification_reason: string | null;
+  classification_summary: string | null;
   classification_requested_model: string | null;
   classification_resolved_model: string | null;
   classification_provider_response_id: string | null;
@@ -120,6 +121,7 @@ export class SqliteEmailRepository implements EmailRepository {
           classification_category,
           classification_confidence,
           classification_reason,
+          classification_summary,
           classification_requested_model,
           classification_resolved_model,
           classification_provider_response_id,
@@ -164,6 +166,7 @@ export class SqliteEmailRepository implements EmailRepository {
           classification_category,
           classification_confidence,
           classification_reason,
+          classification_summary,
           classification_requested_model,
           classification_resolved_model,
           classification_provider_response_id,
@@ -195,6 +198,7 @@ export class SqliteEmailRepository implements EmailRepository {
         category: EmailCategory;
         confidence: number;
         reason: string;
+        summary: string;
         requestedModel: string;
         resolvedModel: string;
         providerResponseId: string;
@@ -205,6 +209,7 @@ export class SqliteEmailRepository implements EmailRepository {
           classification_category = @category,
           classification_confidence = @confidence,
           classification_reason = @reason,
+          classification_summary = @summary,
           classification_requested_model = @requestedModel,
           classification_resolved_model = @resolvedModel,
           classification_provider_response_id = @providerResponseId,
@@ -218,6 +223,7 @@ export class SqliteEmailRepository implements EmailRepository {
         category: classification.category,
         confidence: classification.confidence,
         reason: classification.reason,
+        summary: classification.summary ?? classification.reason,
         requestedModel: classification.requestedModel,
         resolvedModel: classification.resolvedModel,
         providerResponseId: classification.providerResponseId,
@@ -253,6 +259,7 @@ export class SqliteEmailRepository implements EmailRepository {
           classification_category,
           classification_confidence,
           classification_reason,
+          classification_summary,
           classification_requested_model,
           classification_resolved_model,
           classification_provider_response_id,
@@ -486,6 +493,7 @@ function mapClassification(row: EmailRow): EmailClassification | null {
     row.classification_category === null ||
     row.classification_confidence === null ||
     row.classification_reason === null ||
+    row.classification_summary === null ||
     row.classification_requested_model === null ||
     row.classification_resolved_model === null ||
     row.classification_provider_response_id === null
@@ -497,6 +505,7 @@ function mapClassification(row: EmailRow): EmailClassification | null {
     category: row.classification_category,
     confidence: row.classification_confidence,
     reason: row.classification_reason,
+    summary: row.classification_summary,
     requestedModel: row.classification_requested_model,
     resolvedModel: row.classification_resolved_model,
     providerResponseId: row.classification_provider_response_id,

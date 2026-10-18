@@ -24,6 +24,7 @@ test("OpenRouter classifier requests structured output and returns a category", 
                 category: "interview_scheduling",
                 confidence: 0.97,
                 reason: "The sender proposed an interview time.",
+                summary: "The recruiter proposed an interview for Thursday at 2 PM.",
               }),
             },
           },
@@ -59,5 +60,6 @@ test("OpenRouter classifier requests structured output and returns a category", 
   );
   assert.equal(result.category, "interview_scheduling");
   assert.equal(result.confidence, 0.97);
+  assert.equal(result.summary, "The recruiter proposed an interview for Thursday at 2 PM.");
   assert.equal(result.resolvedModel, "test/resolved-classifier");
 });

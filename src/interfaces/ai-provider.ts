@@ -1,10 +1,24 @@
 export type ReasoningEffort = "low" | "medium" | "high";
 
+export interface TrustedSchedulingContext {
+  action: "accept" | "propose" | "propose_multiple" | "clarify_timezone";
+  selectedStart?: string;
+  selectedEnd?: string;
+  displayLabel?: string;
+  proposedSlots?: readonly {
+    start: string;
+    end: string;
+    displayLabel: string;
+  }[];
+  timeZone: string;
+}
+
 export interface GenerateReplyInput {
   from: string;
   subject: string;
   body: string;
   trustedCareerContext?: Readonly<Record<string, unknown>>;
+  trustedSchedulingContext?: TrustedSchedulingContext;
   revision?: {
     previousDraft: string;
     instructions: string;

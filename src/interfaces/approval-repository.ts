@@ -53,11 +53,6 @@ export interface DeliveryStatusUpdate {
   failureUserMessage: string | null;
 }
 
-export interface InterviewSchedulingNotice {
-  providerMessageId: string;
-  subject: string;
-}
-
 export interface StoredReviewDecision {
   providerMessageId: string;
   draftId: number;
@@ -115,14 +110,6 @@ export interface ApprovalRepository {
   markDeliveryStatusRendered(
     draftId: number,
     status: DeliveryDisplayStatus,
-  ): Promise<boolean>;
-  listUnpublishedInterviewSchedulingNotices(
-    limit: number,
-  ): Promise<readonly InterviewSchedulingNotice[]>;
-  saveClassificationPublication(
-    providerMessageId: string,
-    channelId: string,
-    messageId: string,
   ): Promise<boolean>;
   approve(
     draftId: number,

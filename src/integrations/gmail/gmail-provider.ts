@@ -99,12 +99,14 @@ export class GmailEmailProvider implements EmailProvider, OutboundEmailProvider 
 
     const plainBody = findBody(message.payload, "text/plain");
     const htmlBody = plainBody ? undefined : findBody(message.payload, "text/html");
-    const textBody = plainBody
+    const decodedTextBody = plainBody
       ? decodeBody(plainBody)
       : htmlBody
         ? htmlToText(decodeBody(htmlBody))
         : (message.snippet ?? "");
+    const textBody = extractLatestReply(decodedTextBody);
     const automationReason = detectAutomation(headers, from);
+    const attachments = collectAttachments(message.payload);
 
     return {
       providerMessageId,
@@ -118,6 +120,7 @@ export class GmailEmailProvider implements EmailProvider, OutboundEmailProvider 
       receivedAt,
       textBody,
       automationReason,
+      attachments,
     };
   }
 
@@ -180,7 +183,13 @@ function buildRawMessage(
 
 function replySubject(subject: string): string {
   const normalized = subject.replaceAll(/[\r\n]+/g, " ").trim();
-  return /^(?:re\s*:)/i.test(normalized) ? normalized : `Re: ${normalized}`;
+  const withoutForwardPrefixes = normalized
+    .replace(/^(?:(?:fwd?|wg)\s*:\s*)+/i, "")
+    .trim();
+  const replyTarget = withoutForwardPrefixes || normalized;
+  return /^(?:re\s*:)/i.test(replyTarget)
+    ? replyTarget
+    : `Re: ${replyTarget}`;
 }
 
 function safeHeader(value: string, name: string): string {
@@ -356,8 +365,56 @@ function findBody(
   return undefined;
 }
 
+function collectAttachments(
+  part: gmail_v1.Schema$MessagePart | null | undefined,
+): { filename: string; mimeType: string; size: number }[] {
+  if (!part) return [];
+  const attachments = part.filename?.trim()
+    ? [{
+        filename: part.filename.trim(),
+        mimeType: part.mimeType?.trim() || "application/octet-stream",
+        size: part.body?.size ?? 0,
+      }]
+    : [];
+  return attachments.concat(
+    ...(part.parts ?? []).map((child) => collectAttachments(child)),
+  );
+}
+
 function decodeBody(data: string): string {
   return Buffer.from(data, "base64url").toString("utf8");
+}
+
+export function extractLatestReply(value: string): string {
+  const normalized = value.replaceAll("\r\n", "\n").trim();
+  if (!normalized) return "";
+
+  const replyMarkers = [
+    /^On .+ wrote:\s*$/im,
+    /^-{2,}\s*Original Message\s*-{2,}\s*$/im,
+  ];
+  const markerIndexes = replyMarkers.flatMap((pattern) => {
+    const match = pattern.exec(normalized);
+    return match?.index === undefined ? [] : [match.index];
+  });
+  if (markerIndexes.length > 0) {
+    const latest = normalized.slice(0, Math.min(...markerIndexes)).trim();
+    if (latest) return latest;
+  }
+
+  const lines = normalized.split("\n");
+  const firstQuotedLine = lines.findIndex((line) => /^\s*>/.test(line));
+  if (
+    firstQuotedLine > 0 &&
+    lines
+      .slice(firstQuotedLine)
+      .every((line) => !line.trim() || /^\s*>/.test(line))
+  ) {
+    const latest = lines.slice(0, firstQuotedLine).join("\n").trim();
+    if (latest) return latest;
+  }
+
+  return normalized;
 }
 
 function htmlToText(html: string): string {

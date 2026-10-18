@@ -8,7 +8,6 @@ import type {
   DraftPublication,
   GenerationFailureNotice,
   GenerationFailurePublication,
-  InterviewSchedulingNotice,
   ReplyMode,
   RevisionRequest,
   ReviewDecision,
@@ -60,11 +59,6 @@ interface DeliveryUpdateRow {
   status: "approved" | "sending" | "sent" | "failed";
   sent_at: string | null;
   failure_user_message: string | null;
-}
-
-interface InterviewSchedulingNoticeRow {
-  provider_message_id: string;
-  subject: string;
 }
 
 interface DecisionRow {
@@ -495,62 +489,6 @@ export class SqliteApprovalRepository implements ApprovalRepository {
         WHERE draft_id = @draftId
       `)
       .run({ draftId, status, updatedAt: new Date().toISOString() });
-
-    return result.changes === 1;
-  }
-
-  async listUnpublishedInterviewSchedulingNotices(
-    limit: number,
-  ): Promise<readonly InterviewSchedulingNotice[]> {
-    requirePositiveLimit(limit);
-
-    return this.#database
-      .prepare<[number], InterviewSchedulingNoticeRow>(`
-        SELECT e.provider_message_id, e.subject
-        FROM email_messages AS e
-        LEFT JOIN discord_classification_publications AS p
-          ON p.provider_message_id = e.provider_message_id
-        WHERE e.status = 'ignored'
-          AND e.classification_category = 'interview_scheduling'
-          AND e.ignored_reason = 'classification:interview_scheduling'
-          AND p.provider_message_id IS NULL
-        ORDER BY e.received_at ASC
-        LIMIT ?
-      `)
-      .all(limit)
-      .map((row) => ({
-        providerMessageId: row.provider_message_id,
-        subject: row.subject,
-      }));
-  }
-
-  async saveClassificationPublication(
-    providerMessageId: string,
-    channelId: string,
-    messageId: string,
-  ): Promise<boolean> {
-    const result = this.#database
-      .prepare<{
-        providerMessageId: string;
-        channelId: string;
-        messageId: string;
-        postedAt: string;
-      }>(`
-        INSERT INTO discord_classification_publications (
-          provider_message_id,
-          channel_id,
-          message_id,
-          posted_at
-        )
-        VALUES (@providerMessageId, @channelId, @messageId, @postedAt)
-        ON CONFLICT (provider_message_id) DO NOTHING
-      `)
-      .run({
-        providerMessageId,
-        channelId,
-        messageId,
-        postedAt: new Date().toISOString(),
-      });
 
     return result.changes === 1;
   }

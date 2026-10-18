@@ -114,6 +114,10 @@ export const env = Object.freeze({
         "OPENROUTER_CLASSIFIER_MAX_OUTPUT_TOKENS",
         500,
       ),
+      schedulingMaxOutputTokens: positiveInteger(
+        "OPENROUTER_SCHEDULING_MAX_OUTPUT_TOKENS",
+        1_000,
+      ),
     });
   },
 
@@ -151,6 +155,39 @@ export const env = Object.freeze({
       ownAddresses: commaSeparatedList("GMAIL_OWN_ADDRESSES"),
       trustedForwarderAddresses: commaSeparatedList(
         "GMAIL_TRUSTED_FORWARDER_ADDRESSES",
+      ),
+    });
+  },
+
+  get calendar() {
+    const billyCalendarId = required("GOOGLE_CALENDAR_BILLY_ID");
+    const sharedCalendars = [
+      ...new Set(commaSeparatedList("GOOGLE_CALENDAR_SHARED_IDS")),
+    ].map((id) => Object.freeze({ id }));
+
+    return Object.freeze({
+      billyCalendarId,
+      calendars: Object.freeze([
+        Object.freeze({
+          id: billyCalendarId,
+          label: "Billy",
+        }),
+        ...sharedCalendars,
+      ]),
+      timeZone: optional("SCHEDULING_TIME_ZONE", "America/Chicago"),
+      workdayStartHour: positiveInteger("SCHEDULING_WORKDAY_START_HOUR", 9),
+      workdayEndHour: positiveInteger("SCHEDULING_WORKDAY_END_HOUR", 18),
+      defaultDurationMinutes: positiveInteger(
+        "SCHEDULING_DEFAULT_DURATION_MINUTES",
+        30,
+      ),
+      bufferAfterMinutes: positiveInteger(
+        "SCHEDULING_BUFFER_AFTER_MINUTES",
+        15,
+      ),
+      searchBusinessDays: positiveInteger(
+        "SCHEDULING_SEARCH_BUSINESS_DAYS",
+        10,
       ),
     });
   },

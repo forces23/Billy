@@ -19,7 +19,13 @@ Classify with a low-cost OpenRouter model
     |
     +---- job alert / advertisement / scam ----> ignore
     |
-    +---- interview scheduling ----------------> notify in Discord
+    +---- professional scheduling -------------> check configured calendars
+                                                   |
+                                                   v
+                                               discuss/select in Discord thread
+                                                   |
+                                                   v
+                                               generate approval draft
     |
     v
 Generate a reply with the appropriate context
@@ -47,6 +53,7 @@ Billy never intends to send an AI-generated reply without explicit approval.
 | Runtime | Node.js LTS |
 | Language | TypeScript with strict type checking |
 | Email | Gmail API via `googleapis` |
+| Calendar | Google Calendar API via `googleapis` |
 | Draft generation | OpenRouter |
 | Human approval | `discord.js` |
 | Persistence | SQLite via `better-sqlite3` |
@@ -150,6 +157,7 @@ Classifications below the threshold for their action continue through normal dra
 
 - A supported Node.js LTS release
 - A Google Cloud OAuth client with access to the Gmail API — see the [Gmail API integration guide](docs/guides/google/gmail-api-integration.md)
+- Read access to the configured Google calendars — see the [Google Calendar API setup guide](docs/guides/google/google-calendar-api-integration.md)
 - An OpenRouter API key
 - A Discord application and bot — see the [Discord bot and approval channel guide](docs/guides/discord/discord-bot-setup.md)
 
@@ -171,6 +179,10 @@ GMAIL_USER_ID=<me>
 GMAIL_OWN_ADDRESSES=<blawsonhq@gmail.com>
 GMAIL_TRUSTED_FORWARDER_ADDRESSES=<your-personal-email@example.com>
 
+GOOGLE_CALENDAR_SHARED_IDS=<personal-calendar-id>,<another-shared-calendar-id>
+GOOGLE_CALENDAR_BILLY_ID=<billy-calendar-id>
+SCHEDULING_TIME_ZONE=<America/Chicago>
+
 OPENROUTER_API_KEY=<your-openrouter-api-key>
 OPENROUTER_MODEL=<provider/model-name>
 OPENROUTER_CLASSIFIER_MODEL=<provider/cheap-model-name>
@@ -179,6 +191,7 @@ OPENROUTER_DRAFT_REASONING_EFFORT=<medium>
 OPENROUTER_CLASSIFIER_REASONING_EFFORT=<low>
 OPENROUTER_MAX_OUTPUT_TOKENS=<3000>
 OPENROUTER_CLASSIFIER_MAX_OUTPUT_TOKENS=<500>
+OPENROUTER_SCHEDULING_MAX_OUTPUT_TOKENS=<1000>
 
 DISCORD_BOT_TOKEN=<your-discord-bot-token>
 # Optional until general-purpose Billy features are implemented.
@@ -249,9 +262,13 @@ Tests use Node's built-in test runner through `tsx` and do not call live Gmail, 
 
 When OpenRouter exhausts its automatic retries, Billy publishes a Discord failure card with a safe reason and an authorized **Retry Generation** button. Approved draft cards are updated from queued to sending and finally to sent or failed using SQLite as the persistent source of truth.
 
-Billy stores each classification on the email record alongside Gmail's `threadId`. The latest classification from the same Gmail thread is supplied as context when classifying a follow-up; the current message is still classified independently because a recruiting conversation can move from an opportunity to interview scheduling or rejection.
+Billy stores each classification on the email record alongside Gmail's `threadId`. The latest classification from the same Gmail thread is supplied as context when classifying a follow-up; the current message is still classified independently because a recruiting conversation can move from an opportunity to scheduling or rejection.
 
-Interview scheduling currently produces an informational Discord message and no reply draft. Calendar availability checks and Accept, Request another date, and Kindly deny actions are intentionally deferred; those future actions must always require Bobby's explicit confirmation.
+Actionable email is represented by one compact parent card per Gmail thread. The card shows the subject, a factual one-sentence summary, and current status; its **Open thread** button leads to the full incoming messages, generated drafts, scheduling cards, and approval controls.
+
+Professional scheduling emails query the Billy calendar and every calendar listed in `GOOGLE_CALENDAR_SHARED_IDS`. Date-only questions create a new availability card restricted to that date, while exact free times go directly to an approval draft and busy times show nearby same-day choices. Earlier availability cards retain their original choices while the reviewer explores alternatives, and every selection is rechecked before a draft is generated or sent.
+
+After an approved scheduling reply is sent, Billy waits for the recruiter in the same Gmail thread. A confirmation produces a separate Google Calendar event proposal; a counterproposal returns to availability selection instead of restarting the email as an unrelated request. Calendar creation, edits, and deletion always require an explicit Discord action. Events are written only to `GOOGLE_CALENDAR_BILLY_ID`, contain no recruiter attendee, and use Google Calendar's `sendUpdates: none` behavior.
 
 ## Roadmap
 

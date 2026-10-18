@@ -1,6 +1,6 @@
-# Gmail API integration guide
+# Gmail and Calendar API integration guide
 
-This guide configures a Google Cloud project and gives Billy permission to read Gmail messages and send approved replies through the Gmail API.
+This guide configures a Google Cloud project and gives Billy permission to read Gmail messages, send approved replies, and read the Billy calendar plus configured shared calendars for scheduling suggestions.
 
 It is written for Billy's first phase: one Gmail account, a local Node.js process, and OAuth 2.0 credentials stored in a local `.env` file. Billy calls the Gmail API directly through `googleapis`; it does not use an MCP server.
 
@@ -11,12 +11,13 @@ Last checked against Google Cloud Console and Google's documentation: October 11
 By the end of the guide, you will have:
 
 - A Google Cloud project for Billy
-- The Gmail API enabled in that project
+- The Gmail and Google Calendar APIs enabled in that project
 - A configured Google OAuth consent screen
 - Your Gmail account added as an authorized test user, if necessary
 - A Desktop app OAuth client
 - A client ID, client secret, and refresh token in `.env`
 - A successful read-only connection test
+- Read access to every configured calendar
 
 No API key or service account is needed. A normal Gmail mailbox must authorize Billy through OAuth 2.0.
 
@@ -75,6 +76,8 @@ To find this page through the menus instead:
 5. Click **Enable**.
 
 Google's [Node.js Gmail quickstart](https://developers.google.com/workspace/gmail/api/quickstart/nodejs) also starts by enabling the Gmail API in a Cloud project.
+
+Enable the [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com) in the same project. If the OAuth account does not own one of the calendars, share that calendar with the OAuth account with permission to see event details, then copy its Calendar ID from Google Calendar's **Settings and sharing** > **Integrate calendar** section.
 
 ## 3. Configure the Google Auth Platform
 
@@ -160,23 +163,38 @@ Do not use `localhost`, a private page, or an arbitrary page on a domain you do 
 
 If you do not yet own a domain or want to postpone the public pages and privacy disclosures, leave the app in Testing and generate a new refresh token when the seven-day authorization expires. The OAuth client ID and client secret remain the same.
 
-## 5. Configure Gmail scopes
+## 5. Configure Gmail and Calendar scopes
 
 1. Open [Google Auth Platform &gt; Data Access](https://console.cloud.google.com/auth/scopes).
 2. Click **Add or remove scopes**.
-3. In the scope picker, filter by `Gmail API` or paste each scope URL.
-4. Select these two scopes:
+3. In the scope picker, filter by `Gmail API` or `Google Calendar API`, or paste each scope URL.
+4. Select these scopes:
 
 | Scope                                                       | Console description       | Why Billy needs it                                       |
 | ----------------------------------------------------------- | ------------------------- | -------------------------------------------------------- |
 | `https://www.googleapis.com/auth/gmail.messages.readonly` | Read your emails          | Find and read messages without changing or deleting them |
+| `https://www.googleapis.com/auth/gmail.user.readonly`     | View your email address and basic profile | Verify which mailbox authorized Billy                    |
 | `https://www.googleapis.com/auth/gmail.send`              | Send email on your behalf | Send a reply only after Discord approval                 |
+| `https://www.googleapis.com/auth/calendar.readonly`       | See and download calendars | Read event times and titles without changing calendars   |
+| `https://www.googleapis.com/auth/calendar.events.owned`   | Manage events on owned calendars | Prepare event creation and changes only for calendars owned by the OAuth account |
 
 5. Click **Update**.
 6. Click **Save** if the Data Access page presents a separate save button.
-7. Confirm both scopes appear in the configured-scopes list.
+7. Confirm all scopes appear in the configured-scopes list.
 
-### Why these two and not the broader pair
+Add the Billy calendar ID and a comma-separated list of shared Calendar IDs to `.env`:
+
+```dotenv
+GOOGLE_CALENDAR_SHARED_IDS=your-personal-calendar-id,another-shared-calendar-id
+GOOGLE_CALENDAR_BILLY_ID=your-billy-calendar-id
+SCHEDULING_TIME_ZONE=America/Chicago
+```
+
+Regenerate the refresh token after adding the Calendar scopes. An older token does not automatically gain the new permissions. `node scripts/google/verify-gmail-credentials.mjs` now verifies Gmail plus read access to every configured calendar. The OAuth account must own the Billy calendar but not calendars listed in `GOOGLE_CALENDAR_SHARED_IDS`; share those separately owned calendars with the OAuth account using event-detail read access.
+
+Do not select `calendar.events`: it would permit event changes on every calendar the OAuth account can access. `calendar.calendars.readonly` is unnecessary because `calendar.readonly` already includes calendar metadata. The Calendar scope boundary is based on ownership, so `calendar.events.owned` protects the personal calendar only when that calendar is owned by another account.
+
+### Why these Gmail scopes and not the broader alternatives
 
 The scope picker lists 38 Gmail scopes. Most of them are granular scopes that Google has not yet added to its published [Gmail scope reference](https://developers.google.com/workspace/gmail/api/auth/scopes) or its [master OAuth scope list](https://developers.google.com/identity/protocols/oauth2/scopes), both of which still describe an older set of 14. Trust the console picker over the documentation; the picker reflects the live service configuration.
 
@@ -277,7 +295,10 @@ import { authenticate } from "@google-cloud/local-auth";
 
 const scopes = [
   "https://www.googleapis.com/auth/gmail.messages.readonly",
+  "https://www.googleapis.com/auth/gmail.user.readonly",
   "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.events.owned",
 ];
 
 const client = await authenticate({
@@ -327,58 +348,13 @@ After saving the token, remove the temporary generator and move or securely dele
 
 ## 9. Verify the credentials without sending email
 
-Create a temporary file named `verify-gmail-credentials.mjs` in the repository root:
-
-```js
-import "dotenv/config";
-import { google } from "googleapis";
-
-function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing ${name} in .env`);
-  return value;
-}
-
-const auth = new google.auth.OAuth2(
-  required("GOOGLE_CLIENT_ID"),
-  required("GOOGLE_CLIENT_SECRET"),
-);
-
-auth.setCredentials({
-  refresh_token: required("GOOGLE_REFRESH_TOKEN"),
-});
-
-const gmail = google.gmail({ version: "v1", auth });
-const userId = process.env.GMAIL_USER_ID || "me";
-
-const messages = await gmail.users.messages.list({
-  userId,
-  maxResults: 1,
-  q: "in:inbox",
-});
-
-// getProfile is not covered by gmail.messages.readonly. It is reported
-// separately so a scope error here does not fail the connection test.
-let emailAddress = "unavailable (requires gmail.user.readonly)";
-try {
-  const profile = await gmail.users.getProfile({ userId });
-  emailAddress = profile.data.emailAddress;
-} catch {
-  // Intentionally ignored; listing messages already proves the connection.
-}
-
-console.log({
-  emailAddress,
-  inboxConnectionSuccessful: true,
-  sampleMessageFound: Boolean(messages.data.messages?.length),
-});
-```
-
-Run it:
+Run the verifier included with Billy:
 
 ```bash
-node verify-gmail-credentials.mjs
+node scripts/google/verify-gmail-credentials.mjs
 ```
+
+It reads `GOOGLE_CALENDAR_BILLY_ID` and every comma-separated ID in `GOOGLE_CALENDAR_SHARED_IDS`, then confirms that the OAuth account can access each calendar.
 
 A successful result resembles:
 
@@ -386,19 +362,33 @@ A successful result resembles:
 {
   emailAddress: '<your-email-address>',
   inboxConnectionSuccessful: true,
-  sampleMessageFound: true
+  sampleMessageFound: true,
+  calendars: [
+    {
+      calendarId: 'billy-calendar-id',
+      summary: 'Billy',
+      timeZone: 'America/Chicago',
+      readable: true
+    },
+    {
+      calendarId: 'personal-calendar-id',
+      summary: 'Personal',
+      timeZone: 'America/Chicago',
+      readable: true
+    }
+  ]
 }
 ```
 
-`sampleMessageFound` can be `false` when the inbox query returns no messages; the connection is still valid if the script completed without throwing.
+`sampleMessageFound` can be `false` when the inbox query returns no messages. Calendar names, IDs, timezones, and the number of entries depend on your configuration. The connection is valid when every configured calendar reports `readable: true` and the script exits without throwing.
 
-`emailAddress` can report `unavailable`. Reading the mailbox profile belongs to `gmail.user.readonly`, which Billy does not request. Add that scope only if the application later needs the mailbox address at runtime; the core workflow uses `GMAIL_USER_ID=me` instead.
+`emailAddress` can report `unavailable` when the saved refresh token predates the `gmail.user.readonly` permission. Regenerate the token with all scopes listed in section 5. The core workflow still uses `GMAIL_USER_ID=me` rather than depending on the returned address.
 
-This test reads mailbox information but does not send, modify, delete, archive, or mark any message as read. Remove the temporary verification file after the test if you do not want to keep it as a diagnostic tool.
+This test reads mailbox and calendar information but does not send email; modify, delete, archive, or mark messages as read; or change calendar events.
 
 ## 10. Confirm the final `.env` configuration
 
-The Gmail portion of the real `.env` should now contain the OAuth values and recipient-safety settings without angle brackets:
+The Google portion of the real `.env` should now contain the OAuth, Gmail, and Calendar settings without angle brackets:
 
 ```dotenv
 GOOGLE_CLIENT_ID=your-real-client-id.apps.googleusercontent.com
@@ -408,15 +398,19 @@ GMAIL_USER_ID=me
 GMAIL_OWN_ADDRESSES=blawsonhq@gmail.com
 GMAIL_TRUSTED_FORWARDER_ADDRESSES=your-personal-email@example.com
 GMAIL_SEND_INTERVAL_SECONDS=2
+GOOGLE_CALENDAR_BILLY_ID=primary
+GOOGLE_CALENDAR_SHARED_IDS=personal-calendar-id,another-shared-calendar-id
+SCHEDULING_TIME_ZONE=America/Chicago
 ```
 
-`GMAIL_OWN_ADDRESSES` is a comma-separated list of the monitored mailbox and any send-as aliases. Billy removes these addresses from Reply All. `GMAIL_TRUSTED_FORWARDER_ADDRESSES` is a comma-separated list of personal accounts whose forwarded-message headers Billy is allowed to inspect. Replace the forwarding example with the actual personal address you will forward from.
+`GMAIL_OWN_ADDRESSES` is a comma-separated list of the monitored mailbox and any send-as aliases. Billy removes these addresses from Reply All. `GMAIL_TRUSTED_FORWARDER_ADDRESSES` is a comma-separated list of personal accounts whose forwarded-message headers Billy is allowed to inspect. Replace the forwarding example with the actual personal address you will forward from. `GOOGLE_CALENDAR_SHARED_IDS` is a comma-separated list of every read-only calendar shared with Billy; append another ID when you add another shared calendar.
 
 Checklist:
 
-- [X] The Gmail API is enabled in the same project that owns the OAuth client.
+- [X] The Gmail and Google Calendar APIs are enabled in the same project that owns the OAuth client.
 - [X] The authorization account is the Gmail account Billy should monitor.
-- [X] `gmail.messages.readonly` and `gmail.send` were both approved.
+- [X] All Gmail and Calendar scopes listed in section 5 were approved.
+- [X] The Billy calendar and every ID in `GOOGLE_CALENDAR_SHARED_IDS` pass verification.
 - [X] `.env` contains real values without `<` or `>`.
 - [X] `.env.example` contains examples only.
 - [X] `credentials.json` and `.env` are not committed.
@@ -488,7 +482,7 @@ The saved refresh token was authorized with fewer permissions than the code now 
 
 1. Confirm the correct scopes are configured under **Data Access**.
 2. Revoke Billy from the Google Account connections page.
-3. Generate a new refresh token using both scopes in this guide.
+3. Generate a new refresh token using all scopes listed in this guide.
 
 Changing the scope list does not expand an already-issued refresh token.
 

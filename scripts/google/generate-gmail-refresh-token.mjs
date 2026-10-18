@@ -6,6 +6,8 @@ const scopes = [
     "https://www.googleapis.com/auth/gmail.messages.readonly",
     "https://www.googleapis.com/auth/gmail.user.readonly",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events.owned",
 ];
 
 const client = await authenticate({

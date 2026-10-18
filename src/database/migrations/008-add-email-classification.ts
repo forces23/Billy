@@ -41,15 +41,5 @@ export const addEmailClassificationMigration: Migration = {
 
     CREATE INDEX email_messages_thread_classified_at_idx
       ON email_messages (thread_id, classified_at DESC);
-
-    CREATE TABLE discord_classification_publications (
-      provider_message_id TEXT PRIMARY KEY NOT NULL,
-      channel_id TEXT NOT NULL,
-      message_id TEXT NOT NULL UNIQUE,
-      posted_at TEXT NOT NULL,
-      FOREIGN KEY (provider_message_id)
-        REFERENCES email_messages (provider_message_id)
-        ON DELETE CASCADE
-    );
   `,
 };

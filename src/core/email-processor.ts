@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 
 import type { CareerContextProvider } from "../interfaces/career-context-provider.js";
+import type { ConversationRepository } from "../interfaces/conversation-repository.js";
 import type {
   EmailCategory,
   EmailClassification,
@@ -18,6 +19,7 @@ import type {
 } from "../interfaces/email-repository.js";
 import type { RecipientResolver } from "./recipient-resolver.js";
 import { determineEmailRoutingAction } from "./email-routing-policy.js";
+import type { SchedulingWorkflow } from "./scheduling-workflow.js";
 
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_STORED_ERROR_LENGTH = 500;
@@ -27,6 +29,8 @@ export interface EmailProcessorOptions {
   recipientResolver?: RecipientResolver;
   classifier?: EmailClassifier;
   careerContextProvider?: CareerContextProvider;
+  schedulingWorkflow?: SchedulingWorkflow;
+  conversationRepository?: ConversationRepository;
 }
 
 export type RetryGenerationOutcome = "generated" | "failed" | "unavailable";
@@ -41,6 +45,8 @@ export class EmailProcessor {
   readonly #recipientResolver: RecipientResolver | undefined;
   readonly #classifier: EmailClassifier | undefined;
   readonly #careerContextProvider: CareerContextProvider | undefined;
+  readonly #schedulingWorkflow: SchedulingWorkflow | undefined;
+  readonly #conversationRepository: ConversationRepository | undefined;
 
   constructor(
     emailProvider: EmailProvider,
@@ -65,6 +71,8 @@ export class EmailProcessor {
     this.#recipientResolver = options.recipientResolver;
     this.#classifier = options.classifier;
     this.#careerContextProvider = options.careerContextProvider;
+    this.#schedulingWorkflow = options.schedulingWorkflow;
+    this.#conversationRepository = options.conversationRepository;
   }
 
   async processPending(signal?: AbortSignal): Promise<void> {
@@ -158,6 +166,13 @@ export class EmailProcessor {
         return "generated";
       }
 
+      if (
+        this.#schedulingWorkflow &&
+        await this.#schedulingWorkflow.handleIncomingReply(email, message, signal)
+      ) {
+        return "generated";
+      }
+
       const resolvedContext = this.#recipientResolver?.resolve(message);
       const classification = await this.#classifyEmail(
         email,
@@ -177,10 +192,40 @@ export class EmailProcessor {
         return "generated";
       }
 
+      const conversation = classification && this.#conversationRepository
+        ? await this.#conversationRepository.ensureForEmail({
+            gmailThreadId: email.threadId,
+            providerMessageId: email.providerMessageId,
+            subject: resolvedContext?.subject ?? message.subject,
+            summary: classification.summary,
+            status: routingAction === "interview_notification"
+              ? "scheduling_needed"
+              : "processing",
+          })
+        : null;
+
       if (routingAction === "interview_notification" && classification) {
-        // TODO(calendar): Query both blawsonhq@gmail.com and Bobby's primary
-        // calendar, then offer Accept, Request another date, and Kindly deny.
-        // Every calendar response must require Bobby's explicit confirmation.
+        if (this.#schedulingWorkflow) {
+          await this.#schedulingWorkflow.start(
+            email.providerMessageId,
+            {
+              from: resolvedContext
+                ? resolvedContext.from.map(formatAddress).join(", ") || message.from
+                : message.from,
+              subject: resolvedContext?.subject ?? message.subject,
+              body: resolvedContext?.body ?? message.textBody,
+              anchor: message.receivedAt,
+            },
+            signal,
+          );
+          if (conversation) {
+            await this.#conversationRepository?.setStatus(
+              conversation.gmailThreadId,
+              "scheduling_needed",
+            );
+          }
+          return "generated";
+        }
         await this.#ignoreClassifiedEmail(email, classification.category);
         return "generated";
       }
@@ -208,6 +253,13 @@ export class EmailProcessor {
 
       if (!draft) {
         throw new Error("Email left drafting before its draft could be saved");
+      }
+
+      if (conversation) {
+        await this.#conversationRepository?.setStatus(
+          conversation.gmailThreadId,
+          "draft_awaiting_approval",
+        );
       }
 
       this.#logger.info(
@@ -250,6 +302,10 @@ export class EmailProcessor {
             aiFailure?.userMessage ??
             "OpenRouter could not generate a complete draft.",
         },
+      );
+      await this.#conversationRepository?.setStatusByProviderMessageId(
+        email.providerMessageId,
+        "failed",
       );
 
       this.#logger.error(

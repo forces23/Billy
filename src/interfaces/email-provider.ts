@@ -10,6 +10,13 @@ export interface EmailMessage {
   receivedAt: Date;
   textBody: string;
   automationReason: string | null;
+  attachments?: readonly EmailAttachment[];
+}
+
+export interface EmailAttachment {
+  filename: string;
+  mimeType: string;
+  size: number;
 }
 
 export interface ListCandidateMessagesOptions {
