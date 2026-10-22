@@ -8,6 +8,7 @@ Trust and date handling:
 - For a range such as "next week", include every Monday-through-Friday date in that range in requestedDates.
 - Never treat anchorIso's calendar date as requested merely because the current text contains a time without a date.
 - When the current text changes only the time and previousRequest is present, preserve previousRequest.requestedDates. An explicit new date always replaces the previous date.
+- When the current text only clarifies the timezone and previousRequest is present, preserve previousRequest.requestedDates and previousRequest.requestedTime.
 - Return an IANA timezone only when the current text explicitly establishes one. Do not assume a timezone.
 - When the current text proposes a new time, do not inherit a timezone from previousRequest.
 
@@ -30,6 +31,7 @@ Trust and evidence:
 
 Intent rules:
 - confirmation means the recruiter clearly accepts a selected slot or one of the offered slots. Short replies such as "that works" can confirm a single selected slot.
+- An offered slot already has a trusted timezone. When the recruiter selects an offered date and time, classify it as confirmation and inherit that slot's timezone even when the reply does not repeat the timezone. Do not request timezone clarification for an offered slot.
 - counterproposal means the recruiter proposes a date or time outside the selected or offered slots.
 - question means the recruiter asks for information without accepting or changing a time.
 - cancellation means the recruiter cancels the meeting or scheduling process.

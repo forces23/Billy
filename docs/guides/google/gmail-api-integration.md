@@ -403,7 +403,7 @@ GOOGLE_CALENDAR_SHARED_IDS=personal-calendar-id,another-shared-calendar-id
 SCHEDULING_TIME_ZONE=America/Chicago
 ```
 
-`GMAIL_OWN_ADDRESSES` is a comma-separated list of the monitored mailbox and any send-as aliases. Billy removes these addresses from Reply All. `GMAIL_TRUSTED_FORWARDER_ADDRESSES` is a comma-separated list of personal accounts whose forwarded-message headers Billy is allowed to inspect. Replace the forwarding example with the actual personal address you will forward from. `GOOGLE_CALENDAR_SHARED_IDS` is a comma-separated list of every read-only calendar shared with Billy; append another ID when you add another shared calendar.
+`GMAIL_OWN_ADDRESSES` is a comma-separated list of the monitored mailbox and any send-as aliases. Billy removes these addresses from Reply All. `GMAIL_TRUSTED_FORWARDER_ADDRESSES` is a comma-separated list of personal accounts whose forwarded messages Billy accepts. Forwarded messages from other addresses are marked ignored and logged without being classified or drafted. Replace the forwarding example with the actual personal address you will forward from. `GOOGLE_CALENDAR_SHARED_IDS` is a comma-separated list of every read-only calendar shared with Billy; append another ID when you add another shared calendar.
 
 Checklist:
 

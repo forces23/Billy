@@ -7,10 +7,7 @@ import type {
   OutboundEmailProvider,
   SendEmailReplyInput,
   SentEmail,
-} from "../../interfaces/email-provider.js";
-
-const DEFAULT_QUERY = "in:inbox -from:me";
-const DEFAULT_MAX_RESULTS = 50;
+} from "../../interfaces/email-provider.ts";
 
 export interface GmailEmailProviderOptions {
   userId?: string;
@@ -30,7 +27,7 @@ export class GmailEmailProvider implements EmailProvider, OutboundEmailProvider 
     client: gmail_v1.Gmail,
     options: GmailEmailProviderOptions = {},
   ) {
-    const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
+    const maxResults = options.maxResults ?? 50;
 
     if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 500) {
       throw new Error("Gmail maxResults must be an integer from 1 through 500");
@@ -39,11 +36,12 @@ export class GmailEmailProvider implements EmailProvider, OutboundEmailProvider 
     this.#client = client;
     this.#userId = options.userId ?? "me";
     this.#senderAddress = options.senderAddress;
-    this.#query = options.query ?? DEFAULT_QUERY;
+    this.#query = options.query ?? "in:inbox -from:me";
     this.#maxResults = maxResults;
   }
 
-  async listCandidateMessageIds(
+  // grabs a list of email ids from Gmail  -- NOTE: refactored from lisCandidateMessages to listEmailMessageIds
+  async listEmailMessageIds(
     options: ListCandidateMessagesOptions = {},
   ): Promise<readonly string[]> {
     const query = buildQuery(this.#query, options.receivedAfter);
@@ -70,7 +68,8 @@ export class GmailEmailProvider implements EmailProvider, OutboundEmailProvider 
     return messageIds;
   }
 
-  async getMessage(id: string): Promise<EmailMessage> {
+  // grabs a single email from a Gmail message id -- NOTE: refactored from getMessage to getEmailMessage
+  async getEmailMessage(id: string): Promise<EmailMessage> {
     if (!id.trim()) {
       throw new Error("A Gmail message ID is required");
     }
@@ -247,17 +246,13 @@ function detectAutomation(
 }
 
 function buildQuery(query: string, receivedAfter: Date | undefined): string {
-  if (!receivedAfter) {
-    return query;
-  }
+  if (!receivedAfter) return query;
 
   const timestamp = receivedAfter.getTime();
 
-  if (Number.isNaN(timestamp)) {
-    throw new Error("receivedAfter must be a valid date");
-  }
-
-  const epochSeconds = Math.max(0, Math.floor(timestamp / 1_000) - 1);
+  if (Number.isNaN(timestamp)) throw new Error("receivedAfter must be a valid date");
+  
+  const epochSeconds = Math.max(0, Math.floor(timestamp / 1000) - 1);
   return `${query} after:${epochSeconds}`;
 }
 

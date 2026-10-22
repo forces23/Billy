@@ -1,8 +1,6 @@
-import { DateTime } from "luxon";
-
 import type { AvailabilityService } from "./availability-service.js";
 import type { CalendarEventRepository } from "../interfaces/calendar-event-repository.js";
-import type { CalendarEventWrite, CalendarProvider } from "../interfaces/calendar-provider.js";
+import type { CalendarProvider } from "../interfaces/calendar-provider.js";
 import type { ConversationRepository } from "../interfaces/conversation-repository.js";
 import type { SchedulingRepository } from "../interfaces/scheduling-repository.js";
 
@@ -25,43 +23,6 @@ export class CalendarEventWorkflow {
     this.#availability = availability;
     this.#scheduling = scheduling;
     this.#conversations = conversations;
-  }
-
-  async edit(sessionId: number, input: {
-    title: string;
-    localStart: string;
-    timeZone: string;
-    durationMinutes: number;
-    description: string;
-  }): Promise<boolean> {
-    const current = await this.#events.findBySessionId(sessionId);
-    if (!current) return false;
-    const start = DateTime.fromISO(input.localStart, { zone: input.timeZone });
-    if (!start.isValid || !DateTime.now().setZone(input.timeZone).isValid) {
-      throw new Error("Enter a valid local date/time and IANA timezone");
-    }
-    if (!input.title.trim()) throw new Error("Calendar event title is required");
-    if (!Number.isInteger(input.durationMinutes) || input.durationMinutes < 1 || input.durationMinutes > 480) {
-      throw new Error("Duration must be between 1 and 480 minutes");
-    }
-    const event: CalendarEventWrite = {
-      ...current.event,
-      title: input.title.trim(),
-      description: input.description.trim(),
-      start: start.toUTC().toISO()!,
-      end: start.plus({ minutes: input.durationMinutes }).toUTC().toISO()!,
-      timeZone: input.timeZone,
-    };
-    const conflicted = !(await this.#availability.isStillAvailable(
-      {
-        start: event.start,
-        end: event.end,
-        label: start.toFormat("ccc, LLL d 'at' h:mm a ZZZZ"),
-      },
-      undefined,
-      current.googleEventId ?? undefined,
-    ));
-    return this.#events.updateProposal(sessionId, event, conflicted);
   }
 
   async create(
@@ -121,6 +82,19 @@ export class CalendarEventWorkflow {
     const session = await this.#scheduling.findById(sessionId);
     if (session?.gmailThreadId) {
       await this.#conversations.setStatus(session.gmailThreadId, "scheduled");
+    }
+    return true;
+  }
+
+  async reject(sessionId: number, interactionId: string): Promise<boolean> {
+    if (!(await this.#events.rejectProposal(sessionId, interactionId))) return false;
+    const session = await this.#scheduling.findById(sessionId);
+    const record = await this.#events.findBySessionId(sessionId);
+    if (session?.gmailThreadId) {
+      await this.#conversations.setStatus(
+        session.gmailThreadId,
+        record?.status === "created" ? "scheduled" : "rejected",
+      );
     }
     return true;
   }

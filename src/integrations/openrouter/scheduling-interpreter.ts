@@ -23,11 +23,17 @@ export interface OpenRouterSchedulingInterpreterOptions {
 
 class SchedulingInterpretationError extends Error {
   readonly retryable: boolean;
+  readonly truncated: boolean;
 
-  constructor(message: string, retryable: boolean, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    retryable: boolean,
+    options?: ErrorOptions & { truncated?: boolean },
+  ) {
     super(message, options);
     this.name = "SchedulingInterpretationError";
     this.retryable = retryable;
+    this.truncated = options?.truncated ?? false;
   }
 }
 
@@ -53,10 +59,11 @@ export class OpenRouterSchedulingInterpreter implements SchedulingInterpreter {
     signal?: AbortSignal,
   ): Promise<SchedulingRequest> {
     let lastError: unknown;
+    let maxOutputTokens = this.#options.maxOutputTokens;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       try {
-        return await this.#request(input, signal);
+        return await this.#request(input, maxOutputTokens, signal);
       } catch (error: unknown) {
         lastError = error;
         if (
@@ -70,8 +77,17 @@ export class OpenRouterSchedulingInterpreter implements SchedulingInterpreter {
         }
 
         const delayMilliseconds = this.#retryDelaysMilliseconds[attempt - 1] ?? 0;
+        if (error.truncated) {
+          maxOutputTokens *= 2;
+        }
         this.#logger.warn(
-          { err: error, attempt, nextAttempt: attempt + 1, delayMilliseconds },
+          {
+            err: error,
+            attempt,
+            nextAttempt: attempt + 1,
+            delayMilliseconds,
+            nextMaxOutputTokens: maxOutputTokens,
+          },
           "Scheduling interpretation returned an incomplete response and will be retried",
         );
         await wait(delayMilliseconds, signal);
@@ -83,6 +99,7 @@ export class OpenRouterSchedulingInterpreter implements SchedulingInterpreter {
 
   async #request(
     input: SchedulingInterpretInput,
+    maxOutputTokens: number,
     signal?: AbortSignal,
   ): Promise<SchedulingRequest> {
     const controller = new AbortController();
@@ -102,7 +119,7 @@ export class OpenRouterSchedulingInterpreter implements SchedulingInterpreter {
             Authorization: `Bearer ${this.#options.apiKey}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(buildRequest(input, this.#options)),
+          body: JSON.stringify(buildRequest(input, this.#options, maxOutputTokens)),
           signal: controller.signal,
         });
       } catch (error: unknown) {
@@ -141,6 +158,7 @@ export class OpenRouterSchedulingInterpreter implements SchedulingInterpreter {
 function buildRequest(
   input: SchedulingInterpretInput,
   options: OpenRouterSchedulingInterpreterOptions,
+  maxOutputTokens: number,
 ): object {
   return {
     model: options.model,
@@ -160,7 +178,7 @@ function buildRequest(
       },
     ],
     temperature: 0,
-    max_tokens: options.maxOutputTokens,
+    max_completion_tokens: maxOutputTokens,
     reasoning: { effort: options.reasoningEffort ?? "low" },
     provider: { require_parameters: true },
     response_format: {
@@ -201,9 +219,11 @@ function parseResponse(payload: unknown): SchedulingRequest {
   }
   const choice = payload.choices[0];
   if (isRecord(choice) && choice.finish_reason !== "stop") {
+    const truncated = choice.finish_reason === "length";
     throw new SchedulingInterpretationError(
       `Scheduling interpreter stopped before completion (${String(choice.finish_reason ?? "missing")})`,
       true,
+      { truncated },
     );
   }
   if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== "string") {

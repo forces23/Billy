@@ -35,5 +35,6 @@ test("scheduling policies preserve timezone, option-count, and confirmation rule
   assert.match(SCHEDULING_REQUEST_SYSTEM_PROMPT, /reviewerWantsSelection/i);
   assert.match(SCHEDULING_REQUEST_SYSTEM_PROMPT, /preserve previousRequest\.requestedDates/i);
   assert.match(SCHEDULING_REPLY_SYSTEM_PROMPT, /selectedOptionIndex/);
+  assert.match(SCHEDULING_REPLY_SYSTEM_PROMPT, /inherit that slot's timezone/i);
   assert.match(SCHEDULING_REPLY_SYSTEM_PROMPT, /Never guess between multiple options/i);
 });

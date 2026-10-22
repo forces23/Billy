@@ -24,10 +24,10 @@ export interface ListCandidateMessagesOptions {
 }
 
 export interface EmailProvider {
-  listCandidateMessageIds(
+  listEmailMessageIds(
     options?: ListCandidateMessagesOptions,
   ): Promise<readonly string[]>;
-  getMessage(id: string): Promise<EmailMessage>;
+  getEmailMessage(id: string): Promise<EmailMessage>;
 }
 
 export interface SendEmailReplyInput {

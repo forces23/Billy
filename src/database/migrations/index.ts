@@ -11,6 +11,7 @@ import { addEmailConversationsMigration } from "./010-add-email-conversations.js
 import { removeObsoleteDiscordPublicationsMigration } from "./011-remove-obsolete-discord-publications.js";
 import { addMultipleSchedulingOptionsMigration } from "./012-add-multiple-scheduling-options.js";
 import { allowSentConversationsMigration } from "./013-allow-sent-conversations.js";
+import { preserveCalendarEventBeforeReviewMigration } from "./014-preserve-calendar-event-before-review.js";
 import type { Migration } from "./types.js";
 
 export const migrations: readonly Migration[] = Object.freeze([
@@ -27,4 +28,5 @@ export const migrations: readonly Migration[] = Object.freeze([
   removeObsoleteDiscordPublicationsMigration,
   addMultipleSchedulingOptionsMigration,
   allowSentConversationsMigration,
+  preserveCalendarEventBeforeReviewMigration,
 ]);

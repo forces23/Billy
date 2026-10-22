@@ -30,10 +30,10 @@ test("revision 1 remains approvable after revision 2 is generated", async () => 
       automationReason: null,
     };
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage() {
+      async getEmailMessage() {
         return message;
       },
     };

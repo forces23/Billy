@@ -32,6 +32,9 @@ export interface CalendarEventRepository {
   ): Promise<CalendarEventRecord | null>;
   findBySessionId(sessionId: number): Promise<CalendarEventRecord | null>;
   listUnpublished(limit: number): Promise<readonly CalendarEventRecord[]>;
+  listPublishedForControlRefresh(
+    limit: number,
+  ): Promise<readonly CalendarEventRecord[]>;
   savePublication(sessionId: number, messageId: string): Promise<boolean>;
   updateProposal(sessionId: number, event: CalendarEventWrite, conflicted: boolean): Promise<boolean>;
   proposeDelete(sessionId: number): Promise<boolean>;
@@ -39,6 +42,7 @@ export interface CalendarEventRepository {
   markCreated(sessionId: number, providerEventId: string, htmlLink: string | null): Promise<boolean>;
   claimUpdate(sessionId: number, interactionId: string): Promise<boolean>;
   markUpdated(sessionId: number, htmlLink: string | null): Promise<boolean>;
+  rejectProposal(sessionId: number, interactionId: string): Promise<boolean>;
   claimDelete(sessionId: number, interactionId: string): Promise<boolean>;
   markCancelled(sessionId: number): Promise<boolean>;
   markFailed(sessionId: number, error: string): Promise<boolean>;

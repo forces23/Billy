@@ -11,6 +11,10 @@ interface AppliedMigrationRow {
 }
 
 export function createDatabase(databasePath: string): Database.Database {
+  if (typeof databasePath !== "string") {
+    throw new TypeError("databasePath must be a string");
+  }
+
   if (!databasePath.trim()) {
     throw new Error("A SQLite database path is required");
   }
@@ -19,9 +23,7 @@ export function createDatabase(databasePath: string): Database.Database {
     mkdirSync(dirname(resolve(databasePath)), { recursive: true });
   }
 
-  const database = new Database(databasePath, {
-    timeout: 5_000,
-  });
+  const database = new Database(databasePath, { timeout: 5_000 });
 
   database.pragma("foreign_keys = ON");
   database.pragma("journal_mode = WAL");

@@ -98,7 +98,7 @@ export class ApprovalWorkflow {
       };
     }
 
-    const message = await this.#emailProvider.getMessage(
+    const message = await this.#emailProvider.getEmailMessage(
       draft.providerMessageId,
     );
     const context = this.#recipientResolver.resolve(message);
@@ -178,7 +178,7 @@ export class ApprovalWorkflow {
         throw new Error("The source draft no longer exists");
       }
 
-      const message = await this.#emailProvider.getMessage(
+      const message = await this.#emailProvider.getEmailMessage(
         sourceDraft.providerMessageId,
       );
       const context = this.#recipientResolver.resolve(message);

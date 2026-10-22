@@ -18,6 +18,8 @@ import { SqlitePollCheckpointRepository } from "./database/repositories/poll-che
 import { SqliteSchedulingRepository } from "./database/repositories/scheduling-repository.js";
 import { createDiscordClient } from "./integrations/discord/client.js";
 import { DiscordEmailApprovalService } from "./integrations/discord/email-approval-service.js";
+import { DiscordRuntime } from "./integrations/discord/runtime.js";
+import type { DiscordFeature } from "./integrations/discord/runtime.js";
 import { createGmailClient } from "./integrations/gmail/client.js";
 import { GmailEmailProvider } from "./integrations/gmail/gmail-provider.js";
 import { GoogleCalendarProvider } from "./integrations/google/calendar-provider.js";
@@ -30,13 +32,13 @@ import { GmailPoller } from "./jobs/gmail-poller.js";
 import { EmailSender } from "./jobs/email-sender.js";
 
 async function main(): Promise<void> {
-    logger.info("Billy is starting");
+    logger.info("Billy is booting up...");
 
     const database = createDatabase(env.database.path);
     const abortController = new AbortController();
     const removeShutdownHandlers = installShutdownHandlers(abortController);
 
-    logger.info({ databasePath: database.name }, "SQLite database is ready");
+    logger.info({ databasePath: database.name }, "Database is ready");
 
     try {
         const gmailClient = createGmailClient(env.google);
@@ -162,8 +164,10 @@ async function main(): Promise<void> {
                 schedulingGuard: schedulingWorkflow,
             },
         );
-        const discordService = new DiscordEmailApprovalService(
-            createDiscordClient(),
+        const discordClient = createDiscordClient();
+        const discordConfig = env.discord;
+        const discordEmailService = new DiscordEmailApprovalService(
+            discordClient,
             emailProvider,
             emailRepository,
             draftRepository,
@@ -178,10 +182,16 @@ async function main(): Promise<void> {
             calendarEventWorkflow,
             logger,
             {
-                botToken: env.discord.botToken,
-                emailChannelId: env.discord.emailChannelId,
-                approverUserIds: env.discord.approverUserIds,
+                emailChannelId: discordConfig.emailChannelId,
+                approverUserIds: discordConfig.approverUserIds,
             },
+        );
+        const discordFeatures: DiscordFeature[] = [discordEmailService];
+        const discordRuntime = new DiscordRuntime(
+            discordClient,
+            discordConfig.botToken,
+            discordFeatures,
+            logger,
         );
         const poller = new GmailPoller(
             emailProvider,
@@ -210,7 +220,7 @@ async function main(): Promise<void> {
         );
 
         const pollerRun = poller.run(abortController.signal);
-        const discordRun = discordService.run(abortController.signal);
+        const discordRun = discordRuntime.run(abortController.signal);
         const emailSenderRun = emailSender.run(abortController.signal);
 
         try {
@@ -235,6 +245,7 @@ void main().catch((error: unknown) => {
     process.exitCode = 1;
 });
 
+// Handles graceful shutdowns of application
 function installShutdownHandlers(
     abortController: AbortController,
 ): () => void {

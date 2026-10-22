@@ -92,7 +92,7 @@ export class GmailPoller {
       return;
     }
 
-    const candidateIds = await this.#emailProvider.listCandidateMessageIds({
+    const candidateIds = await this.#emailProvider.listEmailMessageIds({
       receivedAfter: previousCheckpoint,
     });
 
@@ -100,7 +100,7 @@ export class GmailPoller {
     let duplicateCount = 0;
 
     for (const candidateId of candidateIds) {
-      const message = await this.#emailProvider.getMessage(candidateId);
+      const message = await this.#emailProvider.getEmailMessage(candidateId);
       const registered = await this.#emailRepository.register(message);
 
       if (registered) {

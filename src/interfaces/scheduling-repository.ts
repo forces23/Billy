@@ -84,6 +84,10 @@ export interface SchedulingRepository {
     slot: SchedulingSlot | null,
     offeredSlots?: readonly SchedulingSlot[],
   ): Promise<boolean>;
+  rejectSession(
+    sessionId: number,
+    interactionId: string,
+  ): Promise<boolean>;
   selectOfferedSlot(
     sessionId: number,
     slot: SchedulingSlot,

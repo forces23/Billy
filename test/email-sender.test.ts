@@ -43,10 +43,10 @@ test("email sender sends approved direct replies and records Gmail metadata", as
     const original = message("direct-1");
     const sentInputs: SendEmailReplyInput[] = [];
     const provider: EmailProvider & OutboundEmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage() {
+      async getEmailMessage() {
         return original;
       },
       async sendReply(input) {
@@ -119,10 +119,10 @@ test("email sender does not attach forwarded replies to the forwarding thread", 
     });
     let sentInput: SendEmailReplyInput | undefined;
     const provider: EmailProvider & OutboundEmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage() {
+      async getEmailMessage() {
         return original;
       },
       async sendReply(input) {
@@ -179,10 +179,10 @@ test("email sender records a Gmail failure and continues", async () => {
   try {
     const original = message("failure-1");
     const provider: EmailProvider & OutboundEmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage() {
+      async getEmailMessage() {
         return original;
       },
       async sendReply() {

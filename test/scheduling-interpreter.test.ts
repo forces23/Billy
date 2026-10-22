@@ -64,6 +64,7 @@ test("scheduling interpreter requests structured dates without assuming timezone
 
 test("scheduling interpreter retries truncated structured output", async () => {
   let attempts = 0;
+  const outputTokenBudgets: number[] = [];
   const interpreter = new OpenRouterSchedulingInterpreter(
     pino({ level: "silent" }),
     {
@@ -72,8 +73,12 @@ test("scheduling interpreter retries truncated structured output", async () => {
       timeoutMilliseconds: 1_000,
       maxOutputTokens: 500,
       retryDelaysMilliseconds: [0, 0],
-      fetchImplementation: async () => {
+      fetchImplementation: async (_input, init) => {
         attempts += 1;
+        const request = JSON.parse(String(init?.body)) as {
+          max_completion_tokens: number;
+        };
+        outputTokenBudgets.push(request.max_completion_tokens);
         return new Response(
           JSON.stringify({
             choices: [
@@ -113,6 +118,7 @@ test("scheduling interpreter retries truncated structured output", async () => {
   });
 
   assert.equal(attempts, 2);
+  assert.deepEqual(outputTokenBudgets, [500, 1_000]);
   assert.deepEqual(result.requestedDates, ["2026-10-21"]);
   assert.equal(result.requestedTime, null);
   assert.equal(result.availabilityOptionCount, 3);

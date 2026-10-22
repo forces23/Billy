@@ -11,7 +11,7 @@ import { SqliteSchedulingRepository } from "../src/database/repositories/schedul
 import type { CalendarEventWrite, CalendarProvider } from "../src/interfaces/calendar-provider.js";
 import type { EmailMessage } from "../src/interfaces/email-provider.js";
 
-test("a confirmed slot creates an event only after an explicit claim", async () => {
+test("calendar proposals require explicit approval and can be rejected", async () => {
   const database = createDatabase(":memory:");
   try {
     const emails = new SqliteEmailRepository(database);
@@ -62,11 +62,12 @@ test("a confirmed slot creates an event only after an explicit claim", async () 
       timeZone: "America/Chicago", workdayStartHour: 9, workdayEndHour: 18,
       defaultDurationMinutes: 30, bufferAfterMinutes: 15, searchBusinessDays: 10,
     });
-    await events.propose(session!.id, {
+    const originalEvent = {
       requestId: "scheduling-test", title: "Interview", description: "Confirmed by email.",
       start: "2026-10-21T17:00:00.000Z", end: "2026-10-21T17:30:00.000Z",
       timeZone: "America/Chicago",
-    });
+    };
+    await events.propose(session!.id, originalEvent);
     assert.equal(createdInput, undefined);
 
     const workflow = new CalendarEventWorkflow(events, calendar, availability, schedules, conversations);
@@ -83,11 +84,55 @@ test("a confirmed slot creates an event only after an explicit claim", async () 
       timeZone: "America/Chicago",
     };
     assert.equal(await events.updateProposal(session!.id, movedEvent, false), true);
+    assert.equal(await workflow.reject(session!.id, "discord-reject-update"), true);
+    assert.equal((await events.findBySessionId(session!.id))?.status, "created");
+    assert.deepEqual((await events.findBySessionId(session!.id))?.event, originalEvent);
+    assert.equal((await conversations.findByGmailThreadId(message.threadId))?.status, "scheduled");
+
+    assert.equal(await events.updateProposal(session!.id, movedEvent, false), true);
     assert.equal(await workflow.update(session!.id, "discord-update"), true);
     assert.equal(updatedProviderEventId, "google-event");
     assert.deepEqual(updatedInput, movedEvent);
     assert.equal((await events.findBySessionId(session!.id))?.status, "created");
     assert.equal((await conversations.findByGmailThreadId(message.threadId))?.status, "scheduled");
+
+    const rejectedMessage: EmailMessage = {
+      ...message,
+      providerMessageId: "calendar-rejected",
+      threadId: "calendar-rejected-thread",
+      messageIdHeader: "<calendar-rejected@example.com>",
+    };
+    await emails.register(rejectedMessage);
+    await emails.claimForDrafting(rejectedMessage.providerMessageId);
+    const rejectedSession = await schedules.createAndAwaitSelection(
+      rejectedMessage.providerMessageId,
+      { summary: "Another interview", requestedDates: ["2026-10-22"], requestedTime: null, timeZone: null, durationMinutes: 30 },
+      { requestedSlot: null, requestedSlotAvailable: false, timezoneRequired: false, options: [], advisories: [], checkedAt: new Date().toISOString() },
+    );
+    await conversations.ensureForEmail({
+      gmailThreadId: rejectedMessage.threadId,
+      providerMessageId: rejectedMessage.providerMessageId,
+      subject: rejectedMessage.subject,
+      summary: "Another confirmed interview.",
+      status: "calendar_event_awaiting_approval",
+    });
+    await events.propose(rejectedSession!.id, {
+      ...originalEvent,
+      requestId: "rejected-calendar-event",
+      title: "Another interview",
+    });
+    assert.equal(
+      await workflow.reject(rejectedSession!.id, "discord-reject-create"),
+      true,
+    );
+    assert.equal(
+      (await events.findBySessionId(rejectedSession!.id))?.status,
+      "cancelled",
+    );
+    assert.equal(
+      (await conversations.findByGmailThreadId(rejectedMessage.threadId))?.status,
+      "rejected",
+    );
   } finally {
     database.close();
   }

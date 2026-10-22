@@ -109,14 +109,17 @@ test("recipient resolver requires manual recipients for an ambiguous trusted for
 });
 
 test("recipient resolver does not unwrap forwards from untrusted senders", () => {
-  const result = resolver.resolve(
-    message({
-      from: "someone@example.com",
-      subject: "Fwd: Something",
-      textBody: "---------- Forwarded message ---------\nFrom: victim@example.com\n\nHi",
-    }),
-  );
+  const untrustedForward = message({
+    from: "someone@example.com",
+    subject: "Fwd: Something",
+    textBody: "---------- Forwarded message ---------\nFrom: victim@example.com\n\nHi",
+  });
+  const inspection = resolver.inspectForwarding(untrustedForward);
+  const result = resolver.resolve(untrustedForward);
 
+  assert.equal(inspection.looksForwarded, true);
+  assert.equal(inspection.trusted, false);
+  assert.equal(inspection.forwarder?.address, "someone@example.com");
   assert.equal(result.source, "direct");
   assert.deepEqual(result.reply.to.map((entry) => entry.address), [
     "someone@example.com",

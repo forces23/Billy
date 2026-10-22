@@ -4,6 +4,7 @@ import test from "node:test";
 import pino from "pino";
 
 import { EmailProcessor } from "../src/core/email-processor.js";
+import { RecipientResolver } from "../src/core/recipient-resolver.js";
 import { createDatabase } from "../src/database/connection.js";
 import { SqliteDraftRepository } from "../src/database/repositories/draft-repository.js";
 import { SqliteEmailRepository } from "../src/database/repositories/email-repository.js";
@@ -48,10 +49,10 @@ test("processor stores a versioned draft and ignores automated mail", async () =
       [automatedMessage.providerMessageId, automatedMessage],
     ]);
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage(id) {
+      async getEmailMessage(id) {
         const message = messages.get(id);
         if (!message) throw new Error("Message not found");
         return message;
@@ -132,6 +133,80 @@ test("processor stores a versioned draft and ignores automated mail", async () =
   }
 });
 
+test("processor ignores and logs forwarded mail from an untrusted sender", async () => {
+  const database = createDatabase(":memory:");
+
+  try {
+    const forwardedMessage = createMessage("untrusted-forward-1");
+    forwardedMessage.from = "Untrusted Person <untrusted@example.com>";
+    forwardedMessage.subject = "Fwd: Sensitive request";
+    forwardedMessage.textBody = [
+      "---------- Forwarded message ---------",
+      "From: Victim <victim@example.com>",
+      "Subject: Sensitive request",
+      "",
+      "Please reply.",
+    ].join("\n");
+    const emailProvider: EmailProvider = {
+      async listEmailMessageIds() {
+        return [];
+      },
+      async getEmailMessage() {
+        return forwardedMessage;
+      },
+    };
+    let generationCount = 0;
+    const aiProvider: AiProvider = {
+      async generateReply() {
+        generationCount += 1;
+        throw new Error("Reply generation should not run");
+      },
+    };
+    const logLines: string[] = [];
+    const logger = pino(
+      { level: "warn" },
+      { write: (line: string) => logLines.push(line) },
+    );
+    const emailRepository = new SqliteEmailRepository(database);
+    const draftRepository = new SqliteDraftRepository(database);
+    const processor = new EmailProcessor(
+      emailProvider,
+      emailRepository,
+      draftRepository,
+      aiProvider,
+      logger,
+      {
+        recipientResolver: new RecipientResolver({
+          ownAddresses: ["bobby@example.com"],
+          trustedForwarderAddresses: ["trusted@example.com"],
+        }),
+      },
+    );
+
+    await emailRepository.register(forwardedMessage);
+    await processor.processPending();
+
+    const stored = await emailRepository.findByProviderMessageId(
+      forwardedMessage.providerMessageId,
+    );
+    const drafts = await draftRepository.listByProviderMessageId(
+      forwardedMessage.providerMessageId,
+    );
+    const log = logLines.map(
+      (line) => JSON.parse(line) as Record<string, unknown>,
+    )[0];
+
+    assert.equal(stored?.status, "ignored");
+    assert.equal(stored?.ignoredReason, "security:untrusted_forwarder");
+    assert.equal(generationCount, 0);
+    assert.equal(drafts.length, 0);
+    assert.equal(log?.forwarderAddress, "untrusted@example.com");
+    assert.equal(log?.msg, "Ignored a forwarded email from an untrusted sender");
+  } finally {
+    database.close();
+  }
+});
+
 test("processor marks generation failures without stopping the batch", async () => {
   const database = createDatabase(":memory:");
 
@@ -144,10 +219,10 @@ test("processor marks generation failures without stopping the batch", async () 
       [secondMessage.providerMessageId, secondMessage],
     ]);
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage(id) {
+      async getEmailMessage(id) {
         const message = messages.get(id);
         if (!message) throw new Error("Message not found");
         return message;
@@ -207,10 +282,10 @@ test("processor retries a stored generation failure exactly once", async () => {
   try {
     const failedMessage = createMessage("manual-retry-1");
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage() {
+      async getEmailMessage() {
         return failedMessage;
       },
     };
@@ -310,10 +385,10 @@ test("processor routes classified email conservatively and limits career context
     }
 
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage(id) {
+      async getEmailMessage(id) {
         const message = messages.get(id);
         if (!message) throw new Error("Message not found");
         return message;
@@ -416,10 +491,10 @@ test("classifier receives the latest classification from the same Gmail thread",
     ]);
     const previousCategories: Array<EmailCategory | null> = [];
     const emailProvider: EmailProvider = {
-      async listCandidateMessageIds() {
+      async listEmailMessageIds() {
         return [];
       },
-      async getMessage(id) {
+      async getEmailMessage(id) {
         const message = messages.get(id);
         if (!message) throw new Error("Message not found");
         return message;

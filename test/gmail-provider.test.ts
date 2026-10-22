@@ -62,7 +62,7 @@ test("Gmail provider keeps only the newest text above a quoted reply", async () 
   );
 
   assert.equal(
-    (await provider.getMessage("message-1")).textBody,
+    (await provider.getEmailMessage("message-1")).textBody,
     "Wednesday works for me.\n\nThank you,\nRecruiter",
   );
 });
@@ -93,15 +93,15 @@ test("Gmail provider identifies no-reply and mailing-list messages", async () =>
   );
 
   assert.match(
-    (await noReplyProvider.getMessage("message-1")).automationReason ?? "",
+    (await noReplyProvider.getEmailMessage("message-1")).automationReason ?? "",
     /automated mailbox/,
   );
   assert.match(
-    (await listProvider.getMessage("message-1")).automationReason ?? "",
+    (await listProvider.getEmailMessage("message-1")).automationReason ?? "",
     /List-Unsubscribe/,
   );
   assert.equal(
-    (await normalProvider.getMessage("message-1")).automationReason,
+    (await normalProvider.getEmailMessage("message-1")).automationReason,
     null,
   );
 });
@@ -114,7 +114,7 @@ test("Gmail provider returns Cc and Reply-To headers", async () => {
     ]),
   );
 
-  const message = await provider.getMessage("message-1");
+  const message = await provider.getEmailMessage("message-1");
 
   assert.deepEqual(message.cc, ["Teammate <team@example.com>"]);
   assert.deepEqual(message.replyTo, ["Replies <reply@example.com>"]);

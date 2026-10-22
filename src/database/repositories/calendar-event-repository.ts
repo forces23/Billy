@@ -35,6 +35,11 @@ export class SqliteCalendarEventRepository implements CalendarEventRepository {
       ) VALUES (@sessionId, 'proposed', @requestId, @event, @now, @now)
       ON CONFLICT (session_id) DO UPDATE SET
         status = CASE WHEN calendar_event_records.status = 'created' THEN 'update_proposed' ELSE 'proposed' END,
+        previous_event_json = CASE
+          WHEN calendar_event_records.status = 'created'
+            THEN calendar_event_records.event_json
+          ELSE calendar_event_records.previous_event_json
+        END,
         event_json = excluded.event_json,
         discord_message_id = NULL,
         last_error = NULL,
@@ -79,6 +84,7 @@ export class SqliteCalendarEventRepository implements CalendarEventRepository {
           session_id = @sessionId,
           status = 'update_proposed',
           event_request_id = @requestId,
+          previous_event_json = event_json,
           event_json = @event,
           approval_interaction_id = NULL,
           discord_message_id = NULL,
@@ -120,6 +126,18 @@ export class SqliteCalendarEventRepository implements CalendarEventRepository {
     `).all(limit).map(mapRow);
   }
 
+  async listPublishedForControlRefresh(limit: number) {
+    return this.#database.prepare<[number], Row>(`
+      ${selectRecord}
+      WHERE discord_message_id IS NOT NULL
+        AND status IN (
+          'proposed', 'conflicted', 'created', 'update_proposed',
+          'cancel_proposed'
+        )
+      ORDER BY updated_at DESC LIMIT ?
+    `).all(limit).map(mapRow);
+  }
+
   async savePublication(sessionId: number, messageId: string) {
     const result = this.#database.prepare<[string, string, number]>(`
       UPDATE calendar_event_records SET discord_message_id = ?, updated_at = ?
@@ -132,6 +150,10 @@ export class SqliteCalendarEventRepository implements CalendarEventRepository {
     const result = this.#database.prepare<[CalendarEventRecordStatus, string, string, number]>(`
       UPDATE calendar_event_records
       SET status = CASE WHEN google_event_id IS NULL THEN ? ELSE 'update_proposed' END,
+          previous_event_json = CASE
+            WHEN status = 'created' THEN event_json
+            ELSE previous_event_json
+          END,
           event_json = ?, approval_interaction_id = NULL,
           discord_message_id = NULL, last_error = NULL, updated_at = ?
       WHERE session_id = ?
@@ -180,9 +202,30 @@ export class SqliteCalendarEventRepository implements CalendarEventRepository {
   async markUpdated(sessionId: number, htmlLink: string | null) {
     const result = this.#database.prepare<[string | null, string, number]>(`
       UPDATE calendar_event_records SET status = 'created', google_event_link = ?,
-        last_error = NULL, discord_message_id = NULL, updated_at = ?
+        previous_event_json = NULL, last_error = NULL,
+        discord_message_id = NULL, updated_at = ?
       WHERE session_id = ? AND status = 'updating'
     `).run(htmlLink, new Date().toISOString(), sessionId);
+    return result.changes === 1;
+  }
+
+  async rejectProposal(sessionId: number, interactionId: string) {
+    const result = this.#database.prepare<[string, string, number]>(`
+      UPDATE calendar_event_records
+      SET status = CASE
+            WHEN google_event_id IS NULL THEN 'cancelled'
+            ELSE 'created'
+          END,
+          event_json = CASE
+            WHEN google_event_id IS NOT NULL AND previous_event_json IS NOT NULL
+              THEN previous_event_json
+            ELSE event_json
+          END,
+          previous_event_json = NULL,
+          approval_interaction_id = ?, last_error = NULL, updated_at = ?
+      WHERE session_id = ?
+        AND status IN ('proposed', 'conflicted', 'update_proposed', 'cancel_proposed')
+    `).run(interactionId, new Date().toISOString(), sessionId);
     return result.changes === 1;
   }
 

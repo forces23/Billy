@@ -251,6 +251,45 @@ export class SqliteSchedulingRepository implements SchedulingRepository {
   ) {
     return this.#claimTransaction(sessionId, interactionId, slot, offeredSlots);
   }
+  async rejectSession(sessionId: number, interactionId: string) {
+    const now = new Date().toISOString();
+    const transaction = this.#database.transaction(() => {
+      const session = this.#findByIdSync(sessionId);
+      if (!session || session.status !== "awaiting_selection") return false;
+      const email = this.#database.prepare<[string, string]>(`
+        UPDATE email_messages
+        SET status = 'rejected', ignored_reason = 'scheduling:rejected_by_reviewer',
+            last_error = NULL, updated_at = ?
+        WHERE provider_message_id = ? AND status = 'ignored'
+      `).run(now, session.providerMessageId);
+      if (email.changes !== 1) return false;
+      const updated = this.#database.prepare<{
+        sessionId: number;
+        interactionId: string;
+        now: string;
+      }>(`
+        UPDATE scheduling_sessions
+        SET status = 'resolved', selection_interaction_id = @interactionId,
+            last_error = NULL, updated_at = @now
+        WHERE id = @sessionId AND status = 'awaiting_selection'
+      `).run({ sessionId, interactionId, now });
+      if (updated.changes !== 1) {
+        throw new Error("Scheduling rejection could not be saved");
+      }
+      this.#database.prepare<[string, number]>(`
+        UPDATE scheduling_lifecycle
+        SET status = 'cancelled', updated_at = ?
+        WHERE session_id = ? AND status = 'awaiting_selection'
+      `).run(now, sessionId);
+      this.#database.prepare<[string, number]>(`
+        UPDATE scheduling_availability_cards
+        SET disabled_at = ?
+        WHERE session_id = ? AND disabled_at IS NULL
+      `).run(now, sessionId);
+      return true;
+    });
+    return transaction();
+  }
   async selectOfferedSlot(sessionId: number, slot: SchedulingSlot) {
     const serialized = JSON.stringify(slot);
     const now = new Date().toISOString();

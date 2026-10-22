@@ -89,6 +89,27 @@ test("scheduling repository persists and idempotently claims a selection", async
       (await emails.findByProviderMessageId(message.providerMessageId))?.status,
       "ignored",
     );
+    assert.equal(
+      await schedules.rejectSession(session!.id, "reject-interaction"),
+      true,
+    );
+    assert.equal(
+      await schedules.rejectSession(session!.id, "duplicate-rejection"),
+      false,
+    );
+    assert.equal(
+      (await emails.findByProviderMessageId(message.providerMessageId))?.status,
+      "rejected",
+    );
+    assert.equal(
+      (await emails.findByProviderMessageId(message.providerMessageId))?.ignoredReason,
+      "scheduling:rejected_by_reviewer",
+    );
+    assert.equal((await schedules.findById(session!.id))?.status, "resolved");
+    assert.notEqual(
+      (await schedules.findLatestCard(session!.id))?.disabledAt,
+      null,
+    );
   } finally {
     database.close();
   }

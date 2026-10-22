@@ -141,9 +141,31 @@ export class EmailProcessor {
     signal?: AbortSignal,
   ): Promise<"generated" | "failed"> {
     try {
-      const message = await this.#emailProvider.getMessage(
+      const message = await this.#emailProvider.getEmailMessage(
         email.providerMessageId,
       );
+
+      const forwarding = this.#recipientResolver?.inspectForwarding(message);
+      if (forwarding?.looksForwarded && !forwarding.trusted) {
+        const ignored = await this.#emailRepository.markIgnored(
+          email.providerMessageId,
+          "drafting",
+          "security:untrusted_forwarder",
+        );
+
+        if (!ignored) {
+          throw new Error("Untrusted forwarded email could not be marked ignored");
+        }
+
+        this.#logger.warn(
+          {
+            providerMessageId: email.providerMessageId,
+            forwarderAddress: forwarding.forwarder?.address ?? null,
+          },
+          "Ignored a forwarded email from an untrusted sender",
+        );
+        return "generated";
+      }
 
       if (message.automationReason) {
         const ignored = await this.#emailRepository.markIgnored(

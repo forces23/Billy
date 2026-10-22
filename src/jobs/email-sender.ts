@@ -118,7 +118,7 @@ export class EmailSender {
           );
         }
 
-        const original = await this.#emailProvider.getMessage(
+        const original = await this.#emailProvider.getEmailMessage(
           email.providerMessageId,
         );
         const context = this.#recipientResolver.resolve(original);

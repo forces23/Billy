@@ -7,7 +7,6 @@ import {
   ChannelType,
   Client,
   EmbedBuilder,
-  Events,
   MessageFlags,
   ModalBuilder,
   TextChannel,
@@ -52,6 +51,7 @@ import type {
   CalendarEventRecord,
   CalendarEventRepository,
 } from "../../interfaces/calendar-event-repository.js";
+import type { DiscordFeature } from "./runtime.js";
 
 const PUBLICATION_INTERVAL_MILLISECONDS = 5_000;
 const PUBLICATION_BATCH_SIZE = 25;
@@ -59,12 +59,12 @@ const FULL_EMAIL_PAGE_CHARACTERS = 3_800;
 type ReviewChannel = ThreadChannel;
 
 export interface DiscordEmailApprovalServiceOptions {
-  botToken: string;
   emailChannelId: string;
   approverUserIds: readonly string[];
 }
 
-export class DiscordEmailApprovalService {
+export class DiscordEmailApprovalService implements DiscordFeature {
+  readonly name = "email-approval";
   readonly #client: Client;
   readonly #emailProvider: EmailProvider;
   readonly #emailRepository: EmailRepository;
@@ -79,7 +79,6 @@ export class DiscordEmailApprovalService {
   readonly #calendarEventRepository: CalendarEventRepository;
   readonly #calendarEventWorkflow: CalendarEventWorkflow;
   readonly #logger: Logger;
-  readonly #botToken: string;
   readonly #emailChannelId: string;
   readonly #approverUserIds: ReadonlySet<string>;
   #channel: TextChannel | undefined;
@@ -116,67 +115,30 @@ export class DiscordEmailApprovalService {
     this.#calendarEventRepository = calendarEventRepository;
     this.#calendarEventWorkflow = calendarEventWorkflow;
     this.#logger = logger.child({ component: "discord-email-approval" });
-    this.#botToken = options.botToken;
     this.#emailChannelId = options.emailChannelId;
     this.#approverUserIds = new Set(options.approverUserIds);
   }
 
-  async run(signal: AbortSignal): Promise<void> {
-    const handleInteraction = (interaction: Interaction): void => {
-      void this.#handleInteraction(interaction).catch((error: unknown) => {
-        this.#logger.error(
-          { err: error, interactionId: interaction.id },
-          "Discord interaction handling failed",
-        );
-        void respondToInteractionError(interaction);
-      });
-    };
-    const handleClientError = (error: Error): void => {
-      this.#logger.error({ err: error }, "Discord client error");
-    };
-    const handleMessage = (message: Message): void => {
-      void this.#handleSchedulingMessage(message).catch((error: unknown) => {
-        this.#logger.error(
-          { err: error, discordMessageId: message.id },
-          "Discord scheduling conversation failed",
-        );
-        void message.reply({
-          content:
-            "I could not interpret that scheduling request or check the calendars. Nothing was selected or sent; please try again.",
-          allowedMentions: { repliedUser: false },
-        }).catch(() => undefined);
-      });
-    };
-
-    this.#client.on(Events.InteractionCreate, handleInteraction);
-    this.#client.on(Events.MessageCreate, handleMessage);
-    this.#client.on(Events.Error, handleClientError);
-
+  async initialize(): Promise<void> {
+    this.#channel = await this.#fetchEmailChannel();
     try {
-      const ready = new Promise<void>((resolve) => {
-        this.#client.once(Events.ClientReady, () => resolve());
-      });
-      await this.#client.login(this.#botToken);
-      await ready;
-      this.#channel = await this.#fetchEmailChannel();
-
-      try {
-        await this.#refreshPublishedAwaitingDrafts();
-      } catch (error: unknown) {
-        this.#logger.warn(
-          { err: error },
-          "Existing Discord approval controls could not be refreshed",
-        );
-      }
-
-      this.#logger.info(
-        {
-          botUserId: this.#client.user?.id,
-          emailChannelId: this.#emailChannelId,
-        },
-        "Discord email approval service started",
+      await this.#refreshPublishedAwaitingDrafts();
+      await this.#refreshPublishedCalendarEventControls();
+    } catch (error: unknown) {
+      this.#logger.warn(
+        { err: error },
+        "Existing Discord review controls could not be refreshed",
       );
+    }
 
+    this.#logger.info(
+      { emailChannelId: this.#emailChannelId },
+      "Discord email approval service started",
+    );
+  }
+
+  async run(signal: AbortSignal): Promise<void> {
+    try {
       while (!signal.aborted) {
         try {
           await this.#publishConversations();
@@ -230,11 +192,35 @@ export class DiscordEmailApprovalService {
         await waitForNextRun(PUBLICATION_INTERVAL_MILLISECONDS, signal);
       }
     } finally {
-      this.#client.off(Events.InteractionCreate, handleInteraction);
-      this.#client.off(Events.MessageCreate, handleMessage);
-      this.#client.off(Events.Error, handleClientError);
-      this.#client.destroy();
       this.#logger.info("Discord email approval service stopped");
+    }
+  }
+
+  async handleMessage(message: Message): Promise<void> {
+    try {
+      await this.#handleConversationMessage(message);
+    } catch (error: unknown) {
+      this.#logger.error(
+        { err: error, discordMessageId: message.id },
+        "Discord conversation message failed",
+      );
+      await message.reply({
+        content:
+          "I could not apply that message. Nothing was selected, sent, or written to the calendar; please try again.",
+        allowedMentions: { repliedUser: false },
+      }).catch(() => undefined);
+    }
+  }
+
+  async handleInteraction(interaction: Interaction): Promise<void> {
+    try {
+      await this.#handleInteraction(interaction);
+    } catch (error: unknown) {
+      this.#logger.error(
+        { err: error, interactionId: interaction.id },
+        "Discord interaction handling failed",
+      );
+      await respondToInteractionError(interaction);
     }
   }
 
@@ -311,7 +297,7 @@ export class DiscordEmailApprovalService {
         conversation.gmailThreadId,
       );
     for (const providerMessageId of providerMessageIds) {
-      const email = await this.#emailProvider.getMessage(providerMessageId);
+      const email = await this.#emailProvider.getEmailMessage(providerMessageId);
       const pages = paginateDiscordText(buildIncomingEmailText(email));
       for (const [page, content] of pages.entries()) {
         const sent = await target.send({
@@ -413,7 +399,7 @@ export class DiscordEmailApprovalService {
       try {
         const draft = await this.#draftRepository.findById(publication.draftId);
         if (!draft) continue;
-        const sourceMessage = await this.#emailProvider.getMessage(
+        const sourceMessage = await this.#emailProvider.getEmailMessage(
           draft.providerMessageId,
         );
         const context = this.#recipientResolver.resolve(sourceMessage);
@@ -456,7 +442,7 @@ export class DiscordEmailApprovalService {
     );
     if (storedEmail?.status !== "awaiting_approval") return;
 
-    const message = await this.#emailProvider.getMessage(
+    const message = await this.#emailProvider.getEmailMessage(
       draft.providerMessageId,
     );
     const context = this.#recipientResolver.resolve(message);
@@ -673,19 +659,81 @@ export class DiscordEmailApprovalService {
     }
   }
 
-  async #handleSchedulingMessage(message: Message): Promise<void> {
+  async #refreshPublishedCalendarEventControls(): Promise<void> {
+    const records = await this.#calendarEventRepository
+      .listPublishedForControlRefresh(100);
+    for (const record of records) {
+      if (!record.discordMessageId) continue;
+      const session = await this.#schedulingRepository.findById(record.sessionId);
+      if (!session) continue;
+      const conversation = await this.#conversationRepository
+        .findByProviderMessageId(session.providerMessageId);
+      if (!conversation?.discordThreadId) continue;
+      const thread = await this.#fetchThread(conversation.discordThreadId);
+      const publication = await thread.messages
+        .fetch(record.discordMessageId)
+        .catch(() => undefined);
+      await publication?.edit({
+        embeds: [buildCalendarEventEmbed(record)],
+        components: buildCalendarEventButtons(record, false),
+        allowedMentions: { parse: [] },
+      });
+    }
+  }
+
+  async #handleConversationMessage(message: Message): Promise<void> {
     if (message.author.bot || !message.channel.isThread()) return;
+    const instructions = message.content.trim();
+    if (!instructions) return;
     const conversation = await this.#conversationRepository.findByDiscordThreadId(
       message.channelId,
     );
     if (!conversation) return;
+    if (!this.#approverUserIds.has(message.author.id)) {
+      await message.reply({
+        content: "You are not authorized to change this email conversation.",
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    }
+
+    const latestEmail = await this.#emailRepository.findByProviderMessageId(
+      conversation.latestProviderMessageId,
+    );
+    if (latestEmail?.status === "awaiting_approval") {
+      const drafts = await this.#draftRepository.listByProviderMessageId(
+        latestEmail.providerMessageId,
+      );
+      const sourceDraft = drafts[drafts.length - 1];
+      if (!sourceDraft) return;
+      await message.channel.sendTyping();
+      const result = await this.#approvalWorkflow.requestRevision(
+        `message:${message.id}`,
+        sourceDraft.id,
+        message.author.id,
+        instructions,
+      );
+      if (!result) {
+        await message.reply({
+          content: "That draft is no longer awaiting changes.",
+          allowedMentions: { repliedUser: false },
+        });
+        return;
+      }
+      await this.#publishPendingDrafts();
+      await message.reply({
+        content: `Revision ${result.draft.revision} is ready for review.`,
+        allowedMentions: { repliedUser: false },
+      });
+      return;
+    }
+
     const session = await this.#schedulingRepository.findByGmailThreadId(
       conversation.gmailThreadId,
     );
-    if (!session || session.status !== "awaiting_selection") return;
-    if (!this.#approverUserIds.has(message.author.id)) {
+    if (!session) {
       await message.reply({
-        content: "You are not authorized to change this scheduling request.",
+        content: "There is no active draft or scheduling item to update.",
         allowedMentions: { repliedUser: false },
       });
       return;
@@ -695,38 +743,83 @@ export class DiscordEmailApprovalService {
       message.id,
       message.author.id,
       "user",
-      message.content,
+      instructions,
     );
     if (!recorded) return;
     await message.channel.sendTyping();
-    const updated = await this.#schedulingWorkflow.updateFromConversation(
-      session.id,
-      message.content,
-      message.createdAt,
-    );
-    if (!updated) {
-      await message.reply({ content: "This scheduling request is no longer active." });
+
+    if (session.status === "awaiting_selection") {
+      const updated = await this.#schedulingWorkflow.updateFromConversation(
+        session.id,
+        instructions,
+        message.createdAt,
+      );
+      if (!updated) {
+        await message.reply({ content: "This scheduling request is no longer active." });
+        return;
+      }
+      if (
+        updated.request.reviewerWantsSelection === true &&
+        updated.analysis.requestedSlotAvailable
+      ) {
+        const selected = await this.#schedulingWorkflow.selectCard(
+          (await this.#schedulingRepository.findLatestCard(updated.id))?.id ?? -1,
+          "requested",
+          `message:${message.id}`,
+        );
+        if (selected.outcome === "drafted") {
+          await this.#publishPendingDrafts();
+          return;
+        }
+        if (selected.outcome === "conflict") {
+          await this.#publishSchedulingSessions();
+          return;
+        }
+      }
+      await this.#publishSchedulingSessions();
       return;
     }
+
+    const calendar = await this.#calendarEventRepository.findBySessionId(
+      session.id,
+    );
     if (
-      updated.request.reviewerWantsSelection === true &&
-      updated.analysis.requestedSlotAvailable
+      calendar &&
+      ["proposed", "conflicted", "created", "update_proposed"].includes(
+        calendar.status,
+      )
     ) {
-      const selected = await this.#schedulingWorkflow.selectCard(
-        (await this.#schedulingRepository.findLatestCard(updated.id))?.id ?? -1,
-        "requested",
-        `message:${message.id}`,
+      const previousPublicationId = calendar.discordMessageId;
+      const updated = await this.#schedulingWorkflow.updateCalendarFromConversation(
+        session.id,
+        instructions,
+        message.createdAt,
       );
-      if (selected.outcome === "drafted") {
-        await this.#publishPendingDrafts();
+      if (!updated) {
+        await message.reply({
+          content: "I could not turn that message into a complete calendar update. Include the date or time you want changed.",
+          allowedMentions: { repliedUser: false },
+        });
         return;
       }
-      if (selected.outcome === "conflict") {
-        await this.#publishSchedulingSessions();
-        return;
+      if (previousPublicationId) {
+        const previous = await message.channel.messages
+          .fetch(previousPublicationId)
+          .catch(() => undefined);
+        await previous?.edit({ components: [] }).catch(() => undefined);
       }
+      await this.#publishCalendarEventProposals();
+      await message.reply({
+        content: "The calendar proposal was updated from your message and checked against the configured calendars.",
+        allowedMentions: { repliedUser: false },
+      });
+      return;
     }
-    await this.#publishSchedulingSessions();
+
+    await message.reply({
+      content: "There is no active draft or editable calendar proposal in this conversation.",
+      allowedMentions: { repliedUser: false },
+    });
   }
 
   async #handleInteraction(interaction: Interaction): Promise<void> {
@@ -764,18 +857,28 @@ export class DiscordEmailApprovalService {
   async #handleButton(interaction: ButtonInteraction): Promise<void> {
     const calendarAction = parseCalendarEventButton(interaction.customId);
     if (calendarAction) {
-      if (calendarAction.action === "edit") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (calendarAction.action === "reject") {
+        const rejected = await this.#calendarEventWorkflow.reject(
+          calendarAction.sessionId,
+          interaction.id,
+        );
         const record = await this.#calendarEventRepository.findBySessionId(
           calendarAction.sessionId,
         );
-        if (!record) {
-          await interaction.reply({ content: "This calendar proposal is no longer available.", flags: MessageFlags.Ephemeral });
-          return;
+        if (record) {
+          await interaction.message.edit({
+            embeds: [buildCalendarEventEmbed(record)],
+            components: buildCalendarEventButtons(record, false),
+          });
         }
-        await interaction.showModal(buildCalendarEventEditModal(record));
+        await interaction.editReply(
+          rejected
+            ? "The calendar proposal was rejected. No pending calendar change will be applied."
+            : "This calendar proposal was already resolved.",
+        );
         return;
       }
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       if (calendarAction.action === "delete") {
         const deleted = await this.#calendarEventWorkflow.delete(
           calendarAction.sessionId,
@@ -819,7 +922,7 @@ export class DiscordEmailApprovalService {
             components: buildCalendarEventButtons(record, false),
           });
         }
-        await interaction.editReply("That time is now busy. Review the conflict, edit the event, or explicitly choose Create anyway.");
+        await interaction.editReply("That time is now busy. Write the change you want in this thread, or explicitly choose Create anyway.");
         return;
       }
       if (outcome === "unavailable") {
@@ -849,6 +952,13 @@ export class DiscordEmailApprovalService {
         await interaction.editReply("This scheduling request was already resolved.");
         return;
       }
+      if (result.outcome === "rejected") {
+        await interaction.message.edit({ components: [] });
+        await interaction.editReply(
+          "Billy will not reply to this scheduling email. A later email in the thread will be reviewed as a new decision.",
+        );
+        return;
+      }
       if (result.outcome === "conflict") {
         await this.#publishSchedulingSessions();
         await interaction.editReply(
@@ -865,11 +975,6 @@ export class DiscordEmailApprovalService {
 
     const parsed = parseButtonId(interaction.customId);
     if (!parsed) return;
-
-    if (parsed.action === "revise") {
-      await interaction.showModal(buildRevisionModal(parsed.draftId));
-      return;
-    }
 
     if (parsed.action === "approve-manual") {
       await interaction.showModal(
@@ -971,61 +1076,6 @@ export class DiscordEmailApprovalService {
   }
 
   async #handleModal(interaction: ModalSubmitInteraction): Promise<void> {
-    const calendarEdit = /^calendar:event:edit:(\d+)$/.exec(interaction.customId);
-    if (calendarEdit?.[1]) {
-      const sessionId = Number(calendarEdit[1]);
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      const saved = await this.#calendarEventWorkflow.edit(sessionId, {
-        title: interaction.fields.getTextInputValue("title"),
-        localStart: interaction.fields.getTextInputValue("start"),
-        timeZone: interaction.fields.getTextInputValue("timezone"),
-        durationMinutes: Number(interaction.fields.getTextInputValue("duration")),
-        description: interaction.fields.getTextInputValue("description"),
-      });
-      if (!saved) {
-        await interaction.editReply("This calendar proposal is no longer editable.");
-        return;
-      }
-      await this.#publishCalendarEventProposals();
-      await interaction.message?.edit({ components: [] }).catch(() => undefined);
-      await interaction.editReply("The event proposal was updated and its time was checked against all configured calendars.");
-      return;
-    }
-
-    const revisionMatch = /^email:revision:(\d+)$/.exec(interaction.customId);
-    if (revisionMatch) {
-      const draftId = Number(revisionMatch[1]);
-      const instructions = interaction.fields.getTextInputValue("instructions");
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const result = await this.#approvalWorkflow.requestRevision(
-        interaction.id,
-        draftId,
-        interaction.user.id,
-        instructions,
-      );
-
-      if (!result) {
-        await interaction.editReply(
-          "This email was already resolved or this request was already handled.",
-        );
-        return;
-      }
-
-      try {
-        await this.#publishPendingDrafts();
-      } catch (error: unknown) {
-        this.#logger.warn(
-          { err: error, draftId: result.draft.id },
-          "The new revision is stored and Discord publication will be retried",
-        );
-      }
-      await interaction.editReply(
-        `Revision ${result.draft.revision} was generated and queued for approval.`,
-      );
-      return;
-    }
-
     const manualMatch =
       /^email:approve-manual:(reply|reply_all):(\d+)$/.exec(
         interaction.customId,
@@ -1096,9 +1146,9 @@ export class DiscordEmailApprovalService {
 
 function parseSchedulingButton(customId: string): {
   cardId: number;
-  selection: "requested" | "multiple" | "clarify_timezone" | number;
+  selection: "requested" | "multiple" | "clarify_timezone" | "reject" | number;
 } | null {
-  const card = /^schedule-card:(requested|multiple|clarify|option):(\d+)(?::(\d+))?$/.exec(
+  const card = /^schedule-card:(requested|multiple|clarify|reject|option):(\d+)(?::(\d+))?$/.exec(
     customId,
   );
   if (card?.[1] && card[2]) {
@@ -1111,6 +1161,9 @@ function parseSchedulingButton(customId: string): {
     }
     if (card[1] === "multiple") {
       return { cardId, selection: "multiple" };
+    }
+    if (card[1] === "reject") {
+      return { cardId, selection: "reject" };
     }
     if (card[3]) {
       return { cardId, selection: Number(card[3]) };
@@ -1152,6 +1205,11 @@ function buildSchedulingCardButtons(
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled));
   });
+  buttons.push(new ButtonBuilder()
+    .setCustomId(`schedule-card:reject:${card.id}`)
+    .setLabel("Do not reply")
+    .setStyle(ButtonStyle.Danger)
+    .setDisabled(disabled));
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
   for (let index = 0; index < buttons.length; index += 5) {
     rows.push(
@@ -1182,12 +1240,12 @@ function buildConversationEmbed(conversation: EmailConversation): EmbedBuilder {
 }
 
 function parseCalendarEventButton(customId: string): {
-  action: "create" | "override" | "edit" | "update" | "delete";
+  action: "create" | "override" | "update" | "delete" | "reject";
   sessionId: number;
 } | null {
-  const match = /^calendar:event:(create|override|edit|update|delete):(\d+)$/.exec(customId);
+  const match = /^calendar:event:(create|override|update|delete|reject):(\d+)$/.exec(customId);
   return match?.[1] && match[2]
-    ? { action: match[1] as "create" | "override" | "edit" | "update" | "delete", sessionId: Number(match[2]) }
+    ? { action: match[1] as "create" | "override" | "update" | "delete" | "reject", sessionId: Number(match[2]) }
     : null;
 }
 
@@ -1205,7 +1263,9 @@ function buildCalendarEventEmbed(record: CalendarEventRecord): EmbedBuilder {
       : record.status === "cancel_proposed"
         ? "The recruiter cancelled. Approve deletion of the existing Google Calendar event."
       : record.status === "cancelled"
-        ? "Deleted from Billy's Google Calendar."
+        ? record.googleEventId
+          ? "Deleted from Billy's Google Calendar."
+          : "The calendar proposal was rejected. No event was created."
       : "The recruiter confirmed the time. Approve creation on Billy's calendar.";
   return new EmbedBuilder()
     .setColor(record.status === "conflicted" ? 0xed4245 : record.status === "created" ? 0x57f287 : 0x5865f2)
@@ -1215,6 +1275,7 @@ function buildCalendarEventEmbed(record: CalendarEventRecord): EmbedBuilder {
       { name: "When", value: `${start.toFormat("ccc, LLL d 'at' h:mm a")}–${end.toFormat("h:mm a ZZZZ")}` },
       { name: "Description", value: truncate(record.event.description || "None", 500) },
       { name: "Calendar", value: "Billy (no attendees / no Google invitation)" },
+      { name: "Changes", value: "Write the change you want in this thread." },
     )
     .setFooter({ text: `billy:calendar-event:${record.sessionId}` });
 }
@@ -1231,15 +1292,15 @@ function buildCalendarEventButtons(
         .setLabel("Delete event")
         .setStyle(ButtonStyle.Danger)
         .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(`calendar:event:reject:${record.sessionId}`)
+        .setLabel("Keep event")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(disabled),
     )];
   }
   if (record.status === "created") {
     return [new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`calendar:event:edit:${record.sessionId}`)
-        .setLabel("Edit event")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(disabled),
       new ButtonBuilder()
         .setCustomId(`calendar:event:delete:${record.sessionId}`)
         .setLabel("Delete event")
@@ -1255,9 +1316,9 @@ function buildCalendarEventButtons(
         .setStyle(ButtonStyle.Success)
         .setDisabled(disabled),
       new ButtonBuilder()
-        .setCustomId(`calendar:event:edit:${record.sessionId}`)
-        .setLabel("Edit details")
-        .setStyle(ButtonStyle.Secondary)
+        .setCustomId(`calendar:event:reject:${record.sessionId}`)
+        .setLabel("Keep current event")
+        .setStyle(ButtonStyle.Danger)
         .setDisabled(disabled),
     )];
   }
@@ -1266,12 +1327,12 @@ function buildCalendarEventButtons(
     .setLabel("Create event")
     .setStyle(ButtonStyle.Success)
     .setDisabled(disabled || record.status === "conflicted");
-  const edit = new ButtonBuilder()
-    .setCustomId(`calendar:event:edit:${record.sessionId}`)
-    .setLabel("Edit details")
-    .setStyle(ButtonStyle.Secondary)
+  const reject = new ButtonBuilder()
+    .setCustomId(`calendar:event:reject:${record.sessionId}`)
+    .setLabel("Do not create")
+    .setStyle(ButtonStyle.Danger)
     .setDisabled(disabled);
-  const buttons = [create, edit];
+  const buttons = [create, reject];
   if (record.status === "conflicted") {
     buttons.push(new ButtonBuilder()
       .setCustomId(`calendar:event:override:${record.sessionId}`)
@@ -1280,42 +1341,6 @@ function buildCalendarEventButtons(
       .setDisabled(disabled));
   }
   return [new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons)];
-}
-
-function buildCalendarEventEditModal(record: CalendarEventRecord): ModalBuilder {
-  const start = DateTime.fromISO(record.event.start, { setZone: true })
-    .setZone(record.event.timeZone);
-  const end = DateTime.fromISO(record.event.end, { setZone: true })
-    .setZone(record.event.timeZone);
-  const duration = Math.round(end.diff(start, "minutes").minutes);
-  return new ModalBuilder()
-    .setCustomId(`calendar:event:edit:${record.sessionId}`)
-    .setTitle("Edit calendar event")
-    .addComponents(
-      modalText("title", "Title", record.event.title, TextInputStyle.Short, 200),
-      modalText("start", "Start (YYYY-MM-DDTHH:mm)", start.toFormat("yyyy-MM-dd'T'HH:mm"), TextInputStyle.Short, 40),
-      modalText("timezone", "IANA timezone", record.event.timeZone, TextInputStyle.Short, 100),
-      modalText("duration", "Duration in minutes", String(duration), TextInputStyle.Short, 3),
-      modalText("description", "Description", record.event.description, TextInputStyle.Paragraph, 1_000),
-    );
-}
-
-function modalText(
-  id: string,
-  label: string,
-  value: string,
-  style: TextInputStyle,
-  maxLength: number,
-): ActionRowBuilder<TextInputBuilder> {
-  return new ActionRowBuilder<TextInputBuilder>().addComponents(
-    new TextInputBuilder()
-      .setCustomId(id)
-      .setLabel(label)
-      .setStyle(style)
-      .setValue(value.slice(0, maxLength))
-      .setRequired(id !== "description")
-      .setMaxLength(maxLength),
-  );
 }
 
 function buildOpenThreadButton(
@@ -1422,13 +1447,16 @@ function buildSchedulingEmbed(
         name: "Duration",
         value: `${session.request.durationMinutes} minutes + 15-minute buffer`,
       },
+      {
+        name: "Changes",
+        value: "Write a clarification or scheduling change in this thread.",
+      },
     );
 }
 
 type ParsedButton =
   | { action: "approve"; mode: ReplyMode; draftId: number }
   | { action: "approve-manual"; mode: ReplyMode; draftId: number }
-  | { action: "revise"; draftId: number }
   | { action: "cancel"; draftId: number }
   | { action: "retry-generation"; providerMessageId: string };
 
@@ -1453,10 +1481,10 @@ function parseButtonId(customId: string): ParsedButton | null {
     };
   }
 
-  const other = /^email:(revise|cancel):(\d+)$/.exec(customId);
+  const other = /^email:(cancel):(\d+)$/.exec(customId);
   if (!other) return null;
   return {
-    action: other[1] as "revise" | "cancel",
+    action: "cancel",
     draftId: Number(other[2]),
   };
 }
@@ -1564,11 +1592,6 @@ function buildApprovalButtons(
         .setStyle(ButtonStyle.Success)
         .setDisabled(disabled),
       new ButtonBuilder()
-        .setCustomId(`email:revise:${draftId}`)
-        .setLabel("Reject w/comments")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(disabled),
-      new ButtonBuilder()
         .setCustomId(`email:cancel:${draftId}`)
         .setLabel("Do not reply")
         .setStyle(ButtonStyle.Danger)
@@ -1636,6 +1659,10 @@ function buildApprovalEmbed(
         value: truncate(draft.reviewerNote ?? "None", 250),
       },
       {
+        name: "Changes",
+        value: "Write revision instructions directly in this thread.",
+      },
+      {
         name: "Source",
         value: truncate(
           `${source} · received ${receivedAt.toISOString()} · ${draft.resolvedModel}`,
@@ -1653,22 +1680,6 @@ function buildApprovalEmbed(
   }
 
   return embed;
-}
-
-function buildRevisionModal(draftId: number): ModalBuilder {
-  const instructions = new TextInputBuilder()
-    .setCustomId("instructions")
-    .setLabel("What should Billy change?")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(1_000);
-
-  return new ModalBuilder()
-    .setCustomId(`email:revision:${draftId}`)
-    .setTitle("Request email edits")
-    .addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(instructions),
-    );
 }
 
 function buildManualRecipientsModal(

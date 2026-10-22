@@ -20,7 +20,10 @@ import type { AvailabilityService } from "./availability-service.js";
 import type { RecipientResolver } from "./recipient-resolver.js";
 import type { SchedulingReplyInterpreter } from "../interfaces/scheduling-reply-interpreter.js";
 import type { ConversationRepository } from "../interfaces/conversation-repository.js";
-import type { CalendarEventRepository } from "../interfaces/calendar-event-repository.js";
+import type {
+  CalendarEventRecord,
+  CalendarEventRepository,
+} from "../interfaces/calendar-event-repository.js";
 import type { StoredEmail, EmailRepository } from "../interfaces/email-repository.js";
 import type { EmailMessage } from "../interfaces/email-provider.js";
 
@@ -28,11 +31,13 @@ export type SchedulingSelection =
   | "requested"
   | "multiple"
   | "clarify_timezone"
+  | "reject"
   | number;
 
 export type SchedulingSelectionResult =
   | { outcome: "drafted"; draft: StoredDraft }
   | { outcome: "conflict"; session: SchedulingSession }
+  | { outcome: "rejected"; session: SchedulingSession }
   | { outcome: "unavailable" };
 
 export class SchedulingWorkflow implements SchedulingGuard {
@@ -99,7 +104,16 @@ export class SchedulingWorkflow implements SchedulingGuard {
       ...input,
       defaultTimeZone: this.#timeZone,
     }, signal);
-    const analysis = await this.#availability.analyze(request, input.anchor, signal);
+    return this.#createSession(providerMessageId, request, input.anchor, signal);
+  }
+
+  async #createSession(
+    providerMessageId: string,
+    request: SchedulingRequest,
+    anchor: Date,
+    signal?: AbortSignal,
+  ): Promise<SchedulingSession> {
+    const analysis = await this.#availability.analyze(request, anchor, signal);
     const session = await this.#repository.createAndAwaitSelection(
       providerMessageId,
       request,
@@ -118,7 +132,7 @@ export class SchedulingWorkflow implements SchedulingGuard {
   ): Promise<SchedulingSession | null> {
     const session = await this.#repository.findById(sessionId);
     if (!session || session.status !== "awaiting_selection") return null;
-    const message = await this.#emailProvider.getMessage(session.providerMessageId);
+    const message = await this.#emailProvider.getEmailMessage(session.providerMessageId);
     const context = this.#recipientResolver.resolve(message);
     const request = await this.#interpreter.interpret({
       from: context.from.map(formatAddress).join(", ") || message.from,
@@ -133,6 +147,86 @@ export class SchedulingWorkflow implements SchedulingGuard {
     return saved ? this.#repository.findById(sessionId) : null;
   }
 
+  async updateCalendarFromConversation(
+    sessionId: number,
+    body: string,
+    anchor: Date,
+    signal?: AbortSignal,
+  ): Promise<CalendarEventRecord | null> {
+    if (!this.#calendarEventRepository) return null;
+    const session = await this.#repository.findById(sessionId);
+    const current = await this.#calendarEventRepository.findBySessionId(sessionId);
+    if (
+      !session ||
+      !current ||
+      !["proposed", "conflicted", "created", "update_proposed"].includes(
+        current.status,
+      )
+    ) return null;
+
+    const start = DateTime.fromISO(current.event.start, { setZone: true })
+      .setZone(current.event.timeZone);
+    const end = DateTime.fromISO(current.event.end, { setZone: true })
+      .setZone(current.event.timeZone);
+    const currentDate = start.toISODate();
+    if (!start.isValid || !end.isValid || !currentDate) return null;
+
+    const message = await this.#emailProvider.getEmailMessage(
+      session.providerMessageId,
+    );
+    const context = this.#recipientResolver.resolve(message);
+    const previousRequest: SchedulingRequest = {
+      ...session.request,
+      summary: current.event.title,
+      requestedDates: [currentDate],
+      requestedTime: start.toFormat("HH:mm"),
+      timeZone: current.event.timeZone,
+      durationMinutes: Math.max(1, Math.round(end.diff(start, "minutes").minutes)),
+      availabilityOptionCount: 1,
+    };
+    const interpreted = await this.#interpreter.interpret({
+      from: context.from.map(formatAddress).join(", ") || message.from,
+      subject: context.subject,
+      body,
+      anchor,
+      defaultTimeZone: this.#timeZone,
+      previousRequest,
+    }, signal);
+    const request: SchedulingRequest = {
+      ...interpreted,
+      requestedDates: interpreted.requestedDates.length > 0
+        ? interpreted.requestedDates
+        : previousRequest.requestedDates,
+      requestedTime: interpreted.requestedTime ?? previousRequest.requestedTime,
+      timeZone: interpreted.timeZone ?? previousRequest.timeZone,
+    };
+    const analysis = await this.#availability.analyze(request, anchor, signal);
+    if (!analysis.requestedSlot) return null;
+    const requestedSlotAvailable = await this.#availability.isStillAvailable(
+      analysis.requestedSlot,
+      signal,
+      current.googleEventId ?? undefined,
+    );
+
+    const updated = await this.#calendarEventRepository.updateProposal(
+      sessionId,
+      {
+        ...current.event,
+        title: request.summary.trim() || current.event.title,
+        start: analysis.requestedSlot.start,
+        end: analysis.requestedSlot.end,
+        timeZone: request.timeZone ?? current.event.timeZone,
+      },
+      !requestedSlotAvailable,
+    );
+    if (!updated) return null;
+    await this.#conversationRepository?.setStatusByProviderMessageId(
+      session.providerMessageId,
+      "calendar_event_awaiting_approval",
+    );
+    return this.#calendarEventRepository.findBySessionId(sessionId);
+  }
+
   async selectCard(
     cardId: number,
     selection: SchedulingSelection,
@@ -144,6 +238,19 @@ export class SchedulingWorkflow implements SchedulingGuard {
     const session = await this.#repository.findById(card.sessionId);
     if (!session || session.status !== "awaiting_selection") {
       return { outcome: "unavailable" };
+    }
+    if (selection === "reject") {
+      if (!(await this.#repository.rejectSession(session.id, interactionId))) {
+        return { outcome: "unavailable" };
+      }
+      await this.#conversationRepository?.setStatusByProviderMessageId(
+        session.providerMessageId,
+        "rejected",
+      );
+      return {
+        outcome: "rejected",
+        session: (await this.#repository.findById(session.id)) ?? session,
+      };
     }
     const offeredSlots = selection === "multiple"
       ? card.analysis.options.slice(
@@ -205,7 +312,7 @@ export class SchedulingWorkflow implements SchedulingGuard {
     );
     if (!claimed) return { outcome: "unavailable" };
     try {
-      const message = await this.#emailProvider.getMessage(session.providerMessageId);
+      const message = await this.#emailProvider.getEmailMessage(session.providerMessageId);
       const context = this.#recipientResolver.resolve(message);
       const generated = await this.#aiProvider.generateReply({
         from: context.from.map(formatAddress).join(", ") || message.from,
@@ -383,13 +490,44 @@ export class SchedulingWorkflow implements SchedulingGuard {
     message: EmailMessage,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    if (!this.#replyInterpreter || !this.#emailRepository) return false;
+    if (!this.#emailRepository) return false;
     const session = await this.#repository.findByGmailThreadId(email.threadId);
-    if (
-      !session ||
-      session.status !== "resolved" ||
-      (!session.selectedSlot && session.offeredSlots.length === 0)
-    ) return false;
+    if (!session || session.status !== "resolved") return false;
+
+    if (isAwaitingTimezoneClarification(session)) {
+      const context = this.#recipientResolver.resolve(message);
+      const interpreted = await this.#interpreter.interpret({
+        from: context.from.map(formatAddress).join(", ") || message.from,
+        subject: context.subject,
+        body: context.body,
+        anchor: message.receivedAt,
+        defaultTimeZone: this.#timeZone,
+        previousRequest: session.request,
+      }, signal);
+      if (interpreted.timeZone === null) return false;
+      const request = {
+        ...interpreted,
+        requestedDates: interpreted.requestedDates.length > 0
+          ? interpreted.requestedDates
+          : session.request.requestedDates,
+        requestedTime: interpreted.requestedTime ?? session.request.requestedTime,
+      };
+      await this.#createSession(
+        email.providerMessageId,
+        request,
+        message.receivedAt,
+        signal,
+      );
+      await this.#attachIncomingSchedulingEmail(email, message);
+      await this.#conversationRepository?.setStatus(
+        email.threadId,
+        "scheduling_needed",
+      );
+      return true;
+    }
+
+    if (!session.selectedSlot && session.offeredSlots.length === 0) return false;
+    if (!this.#replyInterpreter) return false;
     const result = await this.#replyInterpreter.interpret({
       subject: message.subject,
       body: message.textBody,
@@ -399,33 +537,23 @@ export class SchedulingWorkflow implements SchedulingGuard {
       defaultTimeZone: this.#timeZone,
     }, signal);
 
-    const conversation = await this.#conversationRepository?.findByGmailThreadId(
-      email.threadId,
-    );
-    if (conversation) {
-      await this.#conversationRepository?.attachEmail(
-        email.threadId,
-        email.providerMessageId,
-      );
-    } else {
-      await this.#conversationRepository?.ensureForEmail({
-        gmailThreadId: email.threadId,
-        providerMessageId: email.providerMessageId,
-        subject: message.subject,
-        summary: "A reply arrived in an active scheduling conversation.",
-        status: "processing",
-      });
-    }
+    await this.#attachIncomingSchedulingEmail(email, message);
 
     let selectedSlot = session.selectedSlot;
-    if (!selectedSlot && result.intent === "confirmation") {
-      selectedSlot = resolveOfferedSlot(
+    let selectedOfferedSlot: SchedulingSlot | null = null;
+    if (
+      !selectedSlot &&
+      (result.intent === "confirmation" || result.intent === "counterproposal")
+    ) {
+      selectedOfferedSlot = resolveOfferedSlot(
         session.offeredSlots,
         result,
         result.timeZone ?? this.#timeZone,
+        result.intent === "confirmation",
       );
-      if (selectedSlot) {
-        await this.#repository.selectOfferedSlot(session.id, selectedSlot);
+      if (selectedOfferedSlot) {
+        selectedSlot = selectedOfferedSlot;
+        await this.#repository.selectOfferedSlot(session.id, selectedOfferedSlot);
       }
     }
     const selectedLocal = selectedSlot
@@ -441,10 +569,11 @@ export class SchedulingWorkflow implements SchedulingGuard {
       session.selectedSlot === null &&
       selectedSlot === null &&
       (result.explicitDate !== null || result.explicitTime !== null);
-    const effectiveIntent =
-      result.intent === "confirmation" && (statedDifferentSlot || unmatchedOfferedSlot)
-      ? "counterproposal"
-      : result.intent;
+    const effectiveIntent = selectedOfferedSlot
+      ? "confirmation"
+      : result.intent === "confirmation" && (statedDifferentSlot || unmatchedOfferedSlot)
+        ? "counterproposal"
+        : result.intent;
 
     if (effectiveIntent === "counterproposal") {
       await this.start(email.providerMessageId, {
@@ -520,6 +649,29 @@ export class SchedulingWorkflow implements SchedulingGuard {
     return true;
   }
 
+  async #attachIncomingSchedulingEmail(
+    email: StoredEmail,
+    message: EmailMessage,
+  ): Promise<void> {
+    const conversation = await this.#conversationRepository?.findByGmailThreadId(
+      email.threadId,
+    );
+    if (conversation) {
+      await this.#conversationRepository?.attachEmail(
+        email.threadId,
+        email.providerMessageId,
+      );
+      return;
+    }
+    await this.#conversationRepository?.ensureForEmail({
+      gmailThreadId: email.threadId,
+      providerMessageId: email.providerMessageId,
+      subject: message.subject,
+      summary: "A reply arrived in an active scheduling conversation.",
+      status: "processing",
+    });
+  }
+
   async #proposeCalendarEvent(
     session: SchedulingSession,
     slot: SchedulingSlot,
@@ -562,6 +714,16 @@ export class SchedulingWorkflow implements SchedulingGuard {
   }
 }
 
+function isAwaitingTimezoneClarification(
+  session: SchedulingSession,
+): boolean {
+  return session.selectedSlot === null &&
+    session.offeredSlots.length === 0 &&
+    session.analysis.timezoneRequired &&
+    session.request.requestedDates.length > 0 &&
+    session.request.requestedTime !== null;
+}
+
 function counterproposalContext(
   session: SchedulingSession,
   timeZone: string,
@@ -591,7 +753,7 @@ function resolveSlot(
   if (selection === "requested") {
     return analysis.requestedSlotAvailable ? analysis.requestedSlot : null;
   }
-  if (selection === "clarify_timezone") return null;
+  if (selection === "clarify_timezone" || selection === "reject") return null;
   if (selection === "multiple") return null;
   return analysis.options[selection] ?? null;
 }
@@ -605,13 +767,25 @@ function resolveOfferedSlot(
     selectedOptionIndex?: number | null;
   },
   timeZone: string,
+  trustSelectedOptionIndex = false,
 ): SchedulingSlot | null {
   if (
     Number.isInteger(result.selectedOptionIndex) &&
     result.selectedOptionIndex !== null &&
     result.selectedOptionIndex !== undefined
   ) {
-    return offeredSlots[result.selectedOptionIndex] ?? null;
+    const indexedSlot = offeredSlots[result.selectedOptionIndex] ?? null;
+    if (!indexedSlot) return null;
+    if (trustSelectedOptionIndex) return indexedSlot;
+    const indexedLocal = DateTime.fromISO(indexedSlot.start, { setZone: true })
+      .setZone(timeZone);
+    if (
+      (result.explicitDate !== null &&
+        result.explicitDate !== indexedLocal.toISODate()) ||
+      (result.explicitTime !== null &&
+        result.explicitTime !== indexedLocal.toFormat("HH:mm"))
+    ) return null;
+    return indexedSlot;
   }
   const matches = offeredSlots.filter((slot) => {
     const local = DateTime.fromISO(slot.start, { setZone: true }).setZone(timeZone);

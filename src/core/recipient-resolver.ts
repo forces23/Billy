@@ -38,6 +38,12 @@ export interface RecipientResolverOptions {
   trustedForwarderAddresses: readonly string[];
 }
 
+export interface ForwardingInspection {
+  looksForwarded: boolean;
+  trusted: boolean;
+  forwarder: EmailAddress | null;
+}
+
 interface ForwardedBlock {
   headers: ReadonlyMap<string, readonly string[]>;
   body: string;
@@ -55,21 +61,32 @@ export class RecipientResolver {
     );
   }
 
+  inspectForwarding(message: EmailMessage): ForwardingInspection {
+    const outerFrom = parseAddressHeaders([message.from]);
+    const forwarder = outerFrom.length === 1 ? outerFrom[0] ?? null : null;
+
+    return {
+      looksForwarded:
+        FORWARD_SUBJECT_PATTERN.test(message.subject) ||
+        hasForwardMarker(message.textBody),
+      trusted:
+        forwarder !== null &&
+        this.#trustedForwarderAddresses.has(normalizeAddress(forwarder.address)),
+      forwarder,
+    };
+  }
+
   resolve(message: EmailMessage): ResolvedEmailContext {
     const outerFrom = parseAddressHeaders([message.from]);
-    const outerSender = outerFrom.length === 1 ? outerFrom[0] ?? null : null;
-    const trustedForwarder =
-      outerSender !== null &&
-      this.#trustedForwarderAddresses.has(normalizeAddress(outerSender.address));
+    const forwarding = this.inspectForwarding(message);
 
-    if (trustedForwarder) {
+    if (
+      forwarding.looksForwarded &&
+      forwarding.trusted &&
+      forwarding.forwarder
+    ) {
       const forwarded = parseForwardedBlock(message.textBody);
-      const looksForwarded =
-        FORWARD_SUBJECT_PATTERN.test(message.subject) || forwarded !== null;
-
-      if (looksForwarded) {
-        return this.#resolveForwarded(message, outerSender, forwarded);
-      }
+      return this.#resolveForwarded(message, forwarding.forwarder, forwarded);
     }
 
     return this.#resolveDirect(message, outerFrom);
@@ -289,6 +306,13 @@ function parseForwardedBlock(body: string): ForwardedBlock | null {
     body: lines.slice(bodyStart).join("\n").trim(),
     markerCount: matches.length,
   };
+}
+
+function hasForwardMarker(body: string): boolean {
+  return FORWARD_MARKERS.some((pattern) => {
+    pattern.lastIndex = 0;
+    return pattern.test(body);
+  });
 }
 
 function firstHeader(
