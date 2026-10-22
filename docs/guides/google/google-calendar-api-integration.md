@@ -2,7 +2,7 @@
 
 This guide gives Billy read-only access to configured shared calendars and authorizes event management on the Billy calendar when it is owned by the OAuth account. Billy can then evaluate scheduling requests, explain conflicts, and suggest alternative interview times without receiving write access to separately owned calendars.
 
-Billy never creates a calendar event merely because a time was selected. Selecting a time creates an email draft, and Gmail sends it only after Discord approval. When the recruiter later confirms the selected time in the same Gmail thread, Billy posts a separate calendar-event proposal in Discord. Creating, updating, or deleting that event always requires an explicit Discord action.
+Billy never creates a calendar event merely because a time was selected. Selecting a time creates an email draft, and Gmail sends it only after Discord approval. When the recruiter later confirms the selected time in the same Gmail thread, Billy posts a separate calendar-event proposal in Discord. Requested changes are written in the Discord thread and rechecked for availability. Creating, updating, deleting, or rejecting a pending change always requires an explicit Discord action.
 
 Last checked against Google's documentation and Google Cloud Console: October 15, 2026.
 
@@ -255,10 +255,10 @@ For a safe manual test:
 8. Review and approve that draft through the normal approval controls.
 9. Reply as the recruiter in the same Gmail thread and clearly confirm the selected time.
 10. Confirm Billy recognizes the reply as a confirmation instead of starting a new scheduling search.
-11. Review the calendar-event proposal in Discord. Confirm its title, date/time, timezone, duration, and description can be edited.
+11. Review the calendar-event proposal in Discord. To change it, write the requested date, time, timezone, duration, or title change directly in the thread and confirm Billy publishes an updated proposal after rechecking availability.
 12. Click **Create event** and confirm the event appears only on the calendar configured by `GOOGLE_CALENDAR_BILLY_ID`.
 13. Confirm the recruiter was not added as an attendee and Google did not send a Calendar invitation.
-14. Use the explicit Discord edit or delete control if you need to change or remove the test event.
+14. Write another change in the thread and approve the resulting **Update event** proposal, or use **Delete event** and approve the deletion. Confirm **Keep current event** rejects an update or deletion proposal without changing Google Calendar.
 
 ## Troubleshooting
 

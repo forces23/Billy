@@ -1,8 +1,13 @@
 # Discord bot setup guide
 
-This guide creates the Discord bot and private email channel Billy uses for generated email drafts and approval decisions.
+This guide creates the Discord bot, private main-assistant channel, and private
+email-review channel Billy uses for conversations, generated drafts, scheduling,
+and approval decisions.
 
-It is written for Billy's first phase: one local Node.js process, one private Discord server, and a small list of explicitly authorized reviewers. Billy connects directly to Discord through `discord.js`; it does not use an MCP server.
+It is written for one local Node.js process, one private Discord server, one
+configured assistant owner, and a small list of explicitly authorized email
+reviewers. Billy connects directly to Discord through `discord.js`; it does not
+use an MCP server.
 
 Last checked against Discord's developer portal and documentation: October 12, 2026.
 
@@ -12,13 +17,18 @@ By the end of the guide, you will have:
 
 - A Discord application named `Billy Personal Assistant`
 - A bot account attached to the application
-- A private server and email channel
+- A private server, main-assistant channel, and email-review channel
 - A bot token stored in `.env`
-- The email channel ID stored in `.env`
+- The main and email channel IDs stored in `.env`
+- The assistant owner's Discord user ID stored in `.env`
 - One or more authorized reviewer user IDs stored in `.env`
 - A successful connection and message test
 
-Billy posts one compact parent card per actionable Gmail thread. The card opens a Discord thread containing the full incoming messages, generated drafts, scheduling cards, and controls. Every draft button remains tied to its exact draft ID and revision.
+Billy responds to its configured owner in the main channel. In the email channel,
+it posts one compact parent card per actionable Gmail thread. The card opens a
+Discord thread containing the full incoming messages, generated drafts,
+scheduling cards, and controls. Every draft button remains tied to its exact
+draft ID and revision.
 
 ## Before you start
 
@@ -429,17 +439,21 @@ The implemented workflow is:
 5. SQLite stores every generated draft and availability card as an immutable revision.
 6. Billy calculates Reply and Reply All recipients, including one-level trusted-forward handling.
 7. **Approve Reply** or **Approve Reply All** selects that exact revision and recipient list.
-8. **Reject w/comments** generates another immutable revision while older versions remain approvable.
-9. **Do not reply** ends the workflow without sending an email.
-10. Billy verifies that every action came from a user in `DISCORD_APPROVER_USER_IDS`, including actions inside the thread.
-11. Approved drafts are queued for Gmail, and both the draft and parent status progress through sending and completion.
-12. Scheduling follow-ups create new availability cards in the same thread; earlier cards do not get rewritten while alternatives are explored.
-13. After a recruiter confirms the selected time, a separate card requests approval to create the event on Billy's Google Calendar.
-14. If all automatic OpenRouter attempts fail, Billy posts a failure card with a **Retry Generation** button for authorized reviewers.
+8. Writing revision instructions directly in the thread generates another immutable draft revision while older versions remain approvable.
+9. **Do not reply** ends a draft or scheduling workflow without sending an email.
+10. Scheduling clarifications written in the thread generate updated availability cards; earlier cards retain their original options.
+11. After a recruiter confirms the selected time, a separate card requests approval to create the event on Billy's Google Calendar.
+12. Calendar changes written in the thread are checked against configured calendars and published as a new proposal. **Keep event**, **Keep current event**, or **Do not create** rejects the pending change without performing the write.
+13. Billy verifies that every action came from a user in `DISCORD_APPROVER_USER_IDS`, including actions inside the thread.
+14. Approved drafts are queued for Gmail, and both the draft and parent status progress through sending and completion.
+15. If all automatic OpenRouter attempts fail, Billy posts a failure card with a **Retry Generation** button for authorized reviewers.
 
 Channel membership is not the final authorization check. Billy must also compare the clicking user's numeric ID against the allowlist. This prevents another server member with accidental channel access from approving an email.
 
-Discord buttons are interactions, but the natural-language scheduling follow-ups are ordinary thread messages. Billy therefore requires the Message Content privileged intent even though the draft-approval buttons themselves do not.
+Discord buttons are interactions, but draft revisions, scheduling clarifications,
+calendar changes, and main-assistant conversations are ordinary messages. Billy
+therefore requires the Message Content privileged intent even though approval
+buttons themselves do not.
 
 ## 13. Understand when the bot is online
 

@@ -1,12 +1,40 @@
 # Billy
 
-Billy is a local-first AI email assistant that drafts replies to Gmail messages, sends those drafts to Discord for human review, and only sends an email after an authorized user approves it.
+Billy is a local-first personal and email assistant operated through Discord. It
+can hold owner-only conversations with persistent searchable memory, draft Gmail
+replies for human review, coordinate interview scheduling, and propose Google
+Calendar changes. Email and calendar writes still require explicit approval.
 
 The initial goal is a dependable workflow running on a local machine. The application is structured so its core behavior can later move to AWS Lambda without being rewritten around AWS-specific services.
 
-> **Project status:** The local Gmail → OpenRouter → Discord approval → Gmail reply workflow is implemented. Approved replies are queued in SQLite and sent by a dedicated worker.
+> **Project status:** The local Discord assistant, Gmail approval workflow,
+> scheduling workflow, Google Calendar proposals, SQLite persistence, and Gmail
+> sending worker are implemented. Weather, reminders, daily briefs, tasks, and
+> image generation remain on the personal-assistant roadmap.
 
-## Intended workflow
+## Implemented workflows
+
+### Main assistant chat
+
+```text
+Owner message in #billy
+    |
+    +---- local command ------> remember / forget / reset / usage report
+    |
+    v
+Load bounded recent context
+    |
+    +---- durable memories
+    +---- relevant older messages from SQLite FTS5
+    |
+    v
+Gemini Flash Latest through OpenRouter
+    |
+    v
+Reply in #billy and store the complete exchange in SQLite
+```
+
+### Email and scheduling approval
 
 ```text
 Gmail polling
@@ -44,7 +72,9 @@ Request approval in Discord
                               mark as sent
 ```
 
-Billy never intends to send an AI-generated reply without explicit approval.
+Billy never sends an AI-generated email or writes a calendar change without an
+explicit authorized approval. Main-chat replies do not require approval because
+they do not perform those external writes.
 
 ## Technology
 
@@ -54,8 +84,8 @@ Billy never intends to send an AI-generated reply without explicit approval.
 | Language | TypeScript with strict type checking |
 | Email | Gmail API via `googleapis` |
 | Calendar | Google Calendar API via `googleapis` |
-| Draft generation | OpenRouter |
-| Human approval | `discord.js` |
+| Chat and model generation | OpenRouter |
+| Chat and human approval | `discord.js` |
 | Persistence | SQLite via `better-sqlite3` |
 | Database access | Raw SQL and migrations |
 | Logging | Pino with `pino-pretty` for local development |
@@ -75,13 +105,16 @@ Billy/
 │   │   ├── env.ts
 │   │   └── logger.ts
 │   ├── core/
+│   │   ├── assistant-conversation-workflow.ts
 │   │   ├── career-profile-loader.ts
 │   │   ├── email-processor.ts
-│   │   └── approval-workflow.ts
+│   │   ├── approval-workflow.ts
+│   │   └── scheduling-workflow.ts
 │   ├── integrations/
+│   │   ├── discord/      # Shared runtime, assistant, and approval features
 │   │   ├── gmail/
-│   │   ├── openrouter/
-│   │   └── discord/
+│   │   ├── google/
+│   │   └── openrouter/
 │   ├── database/
 │   │   ├── connection.ts
 │   │   ├── migrations/
@@ -89,10 +122,8 @@ Billy/
 │   ├── jobs/
 │   │   ├── gmail-poller.ts
 │   │   └── email-sender.ts
-│   ├── interfaces/
-│   │   ├── email-provider.ts
-│   │   ├── ai-provider.ts
-│   │   └── approval-repository.ts
+│   ├── interfaces/       # Application-owned provider and repository contracts
+│   ├── prompts/          # Standalone model policies
 │   └── index.ts
 ├── profile/
 │   ├── career.json
@@ -135,7 +166,10 @@ These are part of the minimum viable application rather than optional hardening:
 - Every Gmail message is processed at most once.
 - Overlapping polling runs are prevented.
 - Replies preserve Gmail thread information and standard reply headers.
-- Model calls have token, cost, and timeout limits.
+- Assistant input context is bounded; email, classification, and scheduling
+  completions retain output limits and all OpenRouter calls retain timeouts.
+- Main-chat output is intentionally uncapped during the initial one-month usage
+  study. Provider-reported tokens and cost are stored for measurement.
 - Career profile contact details are excluded from model prompts by default.
 - Career context is only loaded for high-confidence recruiter opportunities and qualification questions.
 - Low-confidence classifications cannot silently suppress email or unlock profile context.
@@ -147,6 +181,7 @@ Routing uses action-specific confidence thresholds:
 - Silent ignoring of job alerts, advertisements, and scams requires `0.95` confidence.
 
 Classifications below the threshold for their action continue through normal drafting without career context.
+
 - Sending failures use bounded retries and remain visible for manual recovery.
 - Attachments are ignored unless support is deliberately added later.
 - Logs avoid credentials and unnecessary email content.
@@ -182,6 +217,11 @@ GMAIL_TRUSTED_FORWARDER_ADDRESSES=<your-personal-email@example.com>
 GOOGLE_CALENDAR_SHARED_IDS=<personal-calendar-id>,<another-shared-calendar-id>
 GOOGLE_CALENDAR_BILLY_ID=<billy-calendar-id>
 SCHEDULING_TIME_ZONE=<America/Chicago>
+SCHEDULING_WORKDAY_START_HOUR=<9>
+SCHEDULING_WORKDAY_END_HOUR=<18>
+SCHEDULING_DEFAULT_DURATION_MINUTES=<30>
+SCHEDULING_BUFFER_AFTER_MINUTES=<15>
+SCHEDULING_SEARCH_BUSINESS_DAYS=<10>
 
 OPENROUTER_API_KEY=<your-openrouter-api-key>
 OPENROUTER_MODEL=<provider/model-name>
@@ -215,6 +255,28 @@ The main assistant defaults to `google/gemini-flash-latest` and does not set an
 output-token cap. OpenRouter-reported input, output, reasoning, and cost data is
 stored locally; send `assistant usage` in the main Discord channel to see the
 last 30 days and lifetime totals.
+
+### Use the main assistant
+
+When `DISCORD_MAIN_CHANNEL_ID` and `DISCORD_OWNER_USER_ID` are configured,
+Billy responds to that owner in the main channel without requiring a mention.
+The assistant stores complete exchanges locally but sends only a bounded context
+to OpenRouter: up to 20 recent turns, a small durable-memory section, and up to
+five relevant older excerpts found with SQLite FTS5.
+
+These commands are handled locally without an OpenRouter request:
+
+- `remember that my server runs Debian`
+- `what do you remember?`
+- `what do you remember about my server?`
+- `forget memory 3`
+- `forget that my server runs Debian`
+- `reset our conversation`
+- `assistant usage`
+
+Reset starts a fresh recent-context window without deleting saved memories or
+searchable history. Billy retains messages it receives after this feature is
+installed; it does not backfill older Discord channel history.
 
 `.env` is ignored by Git, as is everything in `SECRETS/`. Only `.env.example` is committed.
 
@@ -272,32 +334,41 @@ When OpenRouter exhausts its automatic retries, Billy publishes a Discord failur
 
 Billy stores each classification on the email record alongside Gmail's `threadId`. The latest classification from the same Gmail thread is supplied as context when classifying a follow-up; the current message is still classified independently because a recruiting conversation can move from an opportunity to scheduling or rejection.
 
-Actionable email is represented by one compact parent card per Gmail thread. The card shows the subject, a factual one-sentence summary, and current status; its **Open thread** button leads to the full incoming messages, generated drafts, scheduling cards, and approval controls.
+Actionable email is represented by one compact parent card per Gmail thread. The card shows the subject, a factual one-sentence summary, and current status; its **Open thread** button leads to the full incoming messages, generated drafts, scheduling cards, and approval controls. Write revision instructions directly in that thread to generate a new immutable draft revision.
 
-Professional scheduling emails query the Billy calendar and every calendar listed in `GOOGLE_CALENDAR_SHARED_IDS`. Date-only questions create a new availability card restricted to that date, while exact free times go directly to an approval draft and busy times show nearby same-day choices. Earlier availability cards retain their original choices while the reviewer explores alternatives, and every selection is rechecked before a draft is generated or sent.
+Professional scheduling emails query the Billy calendar and every calendar listed in `GOOGLE_CALENDAR_SHARED_IDS`. Date-only questions create a new availability card restricted to that date, while exact free times go directly to an approval draft and busy times show nearby same-day choices. Earlier availability cards retain their original choices while the reviewer explores alternatives, and every selection is rechecked before a draft is generated or sent. Reviewers can write clarifications in the thread or select **Do not reply** to close a scheduling request.
 
-After an approved scheduling reply is sent, Billy waits for the recruiter in the same Gmail thread. A confirmation produces a separate Google Calendar event proposal; a counterproposal returns to availability selection instead of restarting the email as an unrelated request. Calendar creation, edits, and deletion always require an explicit Discord action. Events are written only to `GOOGLE_CALENDAR_BILLY_ID`, contain no recruiter attendee, and use Google Calendar's `sendUpdates: none` behavior.
+After an approved scheduling reply is sent, Billy waits for the recruiter in the same Gmail thread. A confirmation produces a separate Google Calendar event proposal; a counterproposal returns to availability selection instead of restarting the email as an unrelated request. Write requested calendar changes in the Discord thread; Billy rechecks availability and publishes a new proposal. Creating, updating, deleting, or rejecting a proposed change requires an explicit Discord action. Events are written only to `GOOGLE_CALENDAR_BILLY_ID`, contain no recruiter attendee, and use Google Calendar's `sendUpdates: none` behavior.
 
 ## Roadmap
 
-### Phase 1: safe local workflow
+### Implemented foundation
 
 - Connect Gmail, OpenRouter, Discord, and SQLite.
-- Poll for eligible Gmail messages.
-- Generate and persist reply drafts.
-- Approve, reject, expire, or regenerate drafts through Discord.
-- Send approved direct replies in the original Gmail thread and forwarded replies as new messages to the resolved original recipients.
-- Implement idempotency, bounded retries, and crash recovery.
-- Add authorization, structured logging, cost limits, and core workflow tests.
+- Review and send Gmail drafts through Discord.
+- Coordinate scheduling and approve Google Calendar changes.
+- Run an owner-only Discord assistant with persistent searchable memory.
+- Track assistant token usage and provider-reported cost.
 
-### Phase 2: operational hardening
+### Next personal-assistant phases
+
+- Add bounded-horizon weather lookup.
+- Add daily priority briefs, reminders, and persistent tasks.
+- Add image generation in the main chat.
+- Add summaries or embeddings only if structured memory and FTS5 retrieval prove
+  insufficient.
+
+See the [personal-assistant roadmap](docs/plans/billy-personal-assistant-roadmap.md)
+for phase boundaries and acceptance criteria.
+
+### Operational hardening
 
 - Improve observability and recovery tools.
 - Add retention and content-redaction controls.
 - Expand automated integration and failure-path testing.
 - Refine approval editing and policy controls.
 
-### Phase 3: optional AWS deployment
+### Optional AWS deployment
 
 - Replace local polling with EventBridge scheduling.
 - Replace Discord Gateway handling with HTTPS interactions.

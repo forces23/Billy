@@ -16,6 +16,8 @@ You will be able to inspect:
 
 - Incoming email metadata and processing status
 - Generated draft bodies and private reviewer notes
+- Scheduling sessions, availability cards, and calendar proposals
+- Assistant conversations, durable memories, and model usage costs
 - Gmail polling checkpoints
 - Applied SQLite migrations
 
@@ -81,7 +83,7 @@ npm run dev
 Wait for this log entry:
 
 ```text
-SQLite database is ready
+Database is ready
 ```
 
 Press `Ctrl+C`, then return to DBeaver and select the database file again.
@@ -117,18 +119,37 @@ Billy Local SQLite
 
 Depending on the DBeaver version, an extra database or schema level might appear before `main`.
 
-Billy currently uses these tables:
+Billy currently uses these application tables:
 
-| Table                          | Contents                                                                          |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `email_messages`               | Gmail message IDs, subjects, timestamps, workflow statuses, and error information |
-| `email_drafts`                 | Generated reply bodies, reviewer notes, revisions, models, and token usage        |
-| `discord_draft_publications`   | Discord channel and message IDs for published draft revisions                     |
-| `email_review_decisions`       | Final approval or do-not-reply decision and its exact selected draft              |
-| `email_review_recipients`      | The exact To and Cc recipients approved for future Gmail sending                  |
-| `email_revision_requests`      | Reviewer comments and source/result drafts for requested edits                    |
-| `poll_checkpoints`             | The last completed Gmail polling checkpoint                                       |
-| `schema_migrations`            | Database migrations that Billy has applied                                        |
+| Area | Table | Contents |
+| --- | --- | --- |
+| Email | `email_messages` | Gmail identifiers, metadata, workflow status, classifications, and errors |
+| Email | `email_drafts` | Immutable draft revisions, reviewer notes, models, and token usage |
+| Email | `email_review_decisions` | Final approval or do-not-reply decision and selected draft |
+| Email | `email_review_recipients` | Exact To and Cc recipients approved for sending |
+| Email | `email_revision_requests` | Thread instructions and source/result drafts for revisions |
+| Email | `email_conversations` | One Discord review conversation per Gmail thread |
+| Email | `email_conversation_messages` | Gmail messages attached to each review conversation |
+| Discord | `discord_draft_publications` | Discord message IDs for published draft revisions |
+| Discord | `discord_generation_failure_publications` | Published retry controls for generation failures |
+| Discord | `discord_inbound_publications` | Published incoming-email messages in review threads |
+| Scheduling | `scheduling_sessions` | Parsed scheduling requests, analysis, selections, and status |
+| Scheduling | `scheduling_turns` | Scheduling clarification history |
+| Scheduling | `scheduling_draft_links` | Links between scheduling sessions and generated email drafts |
+| Scheduling | `scheduling_availability_cards` | Immutable Discord availability-card revisions |
+| Scheduling | `scheduling_lifecycle` | Scheduling and follow-up lifecycle state |
+| Calendar | `calendar_event_records` | Proposed, created, updated, rejected, and cancelled calendar events |
+| Assistant | `assistant_inbound_messages` | Deduplication and processing state for main-channel messages |
+| Assistant | `assistant_conversation_messages` | Complete stored owner and assistant message history |
+| Assistant | `assistant_conversation_state` | Per-channel recent-context reset boundary |
+| Assistant | `assistant_memories` | Active and forgotten durable memories |
+| Assistant | `assistant_model_usage` | Provider-reported model, tokens, reasoning tokens, and cost |
+| Assistant | `assistant_conversation_fts` | FTS5 search index over stored assistant messages |
+| Operations | `poll_checkpoints` | Last completed Gmail polling checkpoint |
+| Operations | `schema_migrations` | Ordered database migrations Billy has applied |
+
+SQLite also displays FTS5 implementation tables ending in `_config`, `_data`,
+`_docsize`, and `_idx`. They are maintained automatically; do not edit them.
 
 To browse a table:
 
@@ -176,6 +197,31 @@ To view only messages waiting for approval, add this line before `ORDER BY`:
 WHERE e.status = 'awaiting_approval'
 ```
 
+### View assistant memories and usage
+
+Saved memories can be inspected with:
+
+```sql
+SELECT id, content, status, created_at, updated_at
+FROM assistant_memories
+ORDER BY updated_at DESC;
+```
+
+Provider-reported assistant usage can be summarized with:
+
+```sql
+SELECT
+  COUNT(*) AS requests,
+  SUM(prompt_tokens) AS input_tokens,
+  SUM(completion_tokens) AS output_tokens,
+  SUM(reasoning_tokens) AS reasoning_tokens,
+  SUM(cost_usd) AS cost_usd
+FROM assistant_model_usage;
+```
+
+These queries are read-only. Memory content and conversation history are private
+user data and should not be included in screenshots or shared exports.
+
 ## 7. Understand the statuses
 
 The `status` column in `email_messages` shows where each email is in Billy's workflow:
@@ -193,7 +239,8 @@ The `status` column in `email_messages` shows where each email is in Billy's wor
 | `expired`           | The approval request expired                                                     |
 | `ignored`           | Billy identified an automated or mailing-list message; inspect `ignored_reason`  |
 
-The `sending` and `sent` statuses remain unused until Gmail reply sending is implemented.
+The email-sending worker actively moves approved messages through `sending` to
+`sent`. A `failed` send remains stored for inspection and recovery.
 
 ## 8. Use DBeaver while Billy is running
 
@@ -248,7 +295,8 @@ Do not delete the `-wal` or `-shm` files to resolve a lock.
 
 ### A table or column from this guide is missing
 
-Billy applies migrations during startup. Run `npm run dev`, wait for **SQLite database is ready**, stop the process with `Ctrl+C`, and refresh the schema in DBeaver.
+Billy applies migrations during startup. Run `npm run dev`, wait for **Database
+is ready**, stop the process with `Ctrl+C`, and refresh the schema in DBeaver.
 
 ## 10. Later: connect DBeaver to PostgreSQL
 
