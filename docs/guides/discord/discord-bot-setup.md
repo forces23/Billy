@@ -69,7 +69,11 @@ If Discord does not offer the private-channel switch, configure the channel afte
 
 The bot will be added to the channel permissions after it is installed.
 
-`DISCORD_MAIN_CHANNEL_ID` is optional and unused during the email-only phase. You can create a general `#billy` channel later without changing the email workflow.
+To enable general conversation, also create a private `#billy` text channel.
+Give only your account and the Billy bot access. The bot needs View Channel,
+Send Messages, and Read Message History in this channel. Keep the main channel
+separate from `#billy-emails` so general messages cannot be interpreted as
+email-review instructions.
 
 ## 3. Create the Discord application
 
@@ -279,9 +283,27 @@ The Discord section of `.env` should now resemble this:
 DISCORD_BOT_TOKEN=your-real-bot-token
 DISCORD_EMAIL_CHANNEL_ID=123456789012345678
 DISCORD_APPROVER_USER_IDS=123456789012345678,987654321098765432
+BILLY_ASSISTANT_ENABLED=true
+DISCORD_MAIN_CHANNEL_ID=234567890123456789
+DISCORD_OWNER_USER_ID=123456789012345678
 ```
 
-`DISCORD_MAIN_CHANNEL_ID` may be omitted until general-purpose Billy features use it.
+When both `DISCORD_MAIN_CHANNEL_ID` and `DISCORD_OWNER_USER_ID` are present,
+Billy enables the assistant automatically. Set `BILLY_ASSISTANT_ENABLED=false`
+to force the email-only workflow, or set it to `true` to require and enable the
+assistant settings explicitly. Billy responds only to that owner in the main
+channel and retains the complete conversation locally. Each model request uses
+only a token-bounded recent window, relevant saved memories, and relevant older
+messages found by local full-text search. Saying `reset our conversation`
+starts a fresh recent-context window without deleting stored history.
+
+Memory and usage commands are handled locally without a model request:
+
+- `remember that my server runs Debian`
+- `what do you remember?`
+- `what do you remember about my server?`
+- `forget memory 3` or `forget that my server runs Debian`
+- `assistant usage`
 
 The email approval workflow also needs these Gmail recipient-safety settings:
 
@@ -290,7 +312,7 @@ GMAIL_OWN_ADDRESSES=blawsonhq@gmail.com
 GMAIL_TRUSTED_FORWARDER_ADDRESSES=your-personal-email@example.com
 ```
 
-Use a comma-separated list when either setting contains multiple accounts. Billy removes `GMAIL_OWN_ADDRESSES` from Reply All and only inspects forwarded-message headers when the outer sender appears in `GMAIL_TRUSTED_FORWARDER_ADDRESSES`.
+Use a comma-separated list when either setting contains multiple accounts. Billy removes `GMAIL_OWN_ADDRESSES` from Reply All and only accepts forwarded messages when the outer sender appears in `GMAIL_TRUSTED_FORWARDER_ADDRESSES`. Forwarded messages from other addresses are marked ignored and logged without being classified or drafted.
 
 Do not add `export` when Billy loads the file through `dotenv`. Do not leave the `<` or `>` example markers in the real `.env` values.
 

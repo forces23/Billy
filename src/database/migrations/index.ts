@@ -12,6 +12,8 @@ import { removeObsoleteDiscordPublicationsMigration } from "./011-remove-obsolet
 import { addMultipleSchedulingOptionsMigration } from "./012-add-multiple-scheduling-options.js";
 import { allowSentConversationsMigration } from "./013-allow-sent-conversations.js";
 import { preserveCalendarEventBeforeReviewMigration } from "./014-preserve-calendar-event-before-review.js";
+import { addAssistantConversationsMigration } from "./015-add-assistant-conversations.js";
+import { addAssistantMemoryMigration } from "./016-add-assistant-memory.js";
 import type { Migration } from "./types.js";
 
 export const migrations: readonly Migration[] = Object.freeze([
@@ -29,4 +31,6 @@ export const migrations: readonly Migration[] = Object.freeze([
   addMultipleSchedulingOptionsMigration,
   allowSentConversationsMigration,
   preserveCalendarEventBeforeReviewMigration,
+  addAssistantConversationsMigration,
+  addAssistantMemoryMigration,
 ]);

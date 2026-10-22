@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { env } from "./config/env.js";
 import logger from "./config/logger.js";
 import { ApprovalWorkflow } from "./core/approval-workflow.js";
+import { AssistantConversationWorkflow } from "./core/assistant-conversation-workflow.js";
 import { CareerProfileLoader } from "./core/career-profile-loader.js";
 import { EmailProcessor } from "./core/email-processor.js";
 import { AvailabilityService } from "./core/availability-service.js";
@@ -10,6 +11,7 @@ import { SchedulingWorkflow } from "./core/scheduling-workflow.js";
 import { RecipientResolver } from "./core/recipient-resolver.js";
 import { createDatabase } from "./database/connection.js";
 import { SqliteApprovalRepository } from "./database/repositories/approval-repository.js";
+import { SqliteAssistantConversationRepository } from "./database/repositories/assistant-conversation-repository.js";
 import { SqliteDraftRepository } from "./database/repositories/draft-repository.js";
 import { SqliteConversationRepository } from "./database/repositories/conversation-repository.js";
 import { SqliteCalendarEventRepository } from "./database/repositories/calendar-event-repository.js";
@@ -17,6 +19,7 @@ import { SqliteEmailRepository } from "./database/repositories/email-repository.
 import { SqlitePollCheckpointRepository } from "./database/repositories/poll-checkpoint-repository.js";
 import { SqliteSchedulingRepository } from "./database/repositories/scheduling-repository.js";
 import { createDiscordClient } from "./integrations/discord/client.js";
+import { DiscordAssistantService } from "./integrations/discord/assistant-service.js";
 import { DiscordEmailApprovalService } from "./integrations/discord/email-approval-service.js";
 import { DiscordRuntime } from "./integrations/discord/runtime.js";
 import type { DiscordFeature } from "./integrations/discord/runtime.js";
@@ -24,6 +27,7 @@ import { createGmailClient } from "./integrations/gmail/client.js";
 import { GmailEmailProvider } from "./integrations/gmail/gmail-provider.js";
 import { GoogleCalendarProvider } from "./integrations/google/calendar-provider.js";
 import { OpenRouterAiProvider } from "./integrations/openrouter/openrouter-provider.js";
+import { OpenRouterAssistantProvider } from "./integrations/openrouter/assistant-provider.js";
 import { OpenRouterEmailClassifier } from "./integrations/openrouter/email-classifier.js";
 import { OpenRouterSchedulingInterpreter } from "./integrations/openrouter/scheduling-interpreter.js";
 import { OpenRouterSchedulingReplyInterpreter } from "./integrations/openrouter/scheduling-reply-interpreter.js";
@@ -187,6 +191,31 @@ async function main(): Promise<void> {
             },
         );
         const discordFeatures: DiscordFeature[] = [discordEmailService];
+        if (discordConfig.assistantEnabled) {
+            const assistantRepository =
+                new SqliteAssistantConversationRepository(database);
+            const assistantProvider = new OpenRouterAssistantProvider(logger, {
+                apiKey: env.openRouter.apiKey,
+                model: env.openRouter.assistantModel,
+                timeoutMilliseconds: env.openRouter.timeoutMilliseconds,
+                reasoningEffort: env.openRouter.assistantReasoningEffort,
+            });
+            const assistantWorkflow = new AssistantConversationWorkflow(
+                assistantProvider,
+                assistantRepository,
+            );
+            discordFeatures.push(
+                new DiscordAssistantService(
+                    discordClient,
+                    assistantWorkflow,
+                    logger,
+                    {
+                        mainChannelId: discordConfig.mainChannelId,
+                        ownerUserId: discordConfig.ownerUserId,
+                    },
+                ),
+            );
+        }
         const discordRuntime = new DiscordRuntime(
             discordClient,
             discordConfig.botToken,

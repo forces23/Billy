@@ -186,16 +186,19 @@ SCHEDULING_TIME_ZONE=<America/Chicago>
 OPENROUTER_API_KEY=<your-openrouter-api-key>
 OPENROUTER_MODEL=<provider/model-name>
 OPENROUTER_CLASSIFIER_MODEL=<provider/cheap-model-name>
+OPENROUTER_ASSISTANT_MODEL=<google/gemini-flash-latest>
 OPENROUTER_TIMEOUT_MS=<30000>
 OPENROUTER_DRAFT_REASONING_EFFORT=<medium>
 OPENROUTER_CLASSIFIER_REASONING_EFFORT=<low>
+OPENROUTER_ASSISTANT_REASONING_EFFORT=<low>
 OPENROUTER_MAX_OUTPUT_TOKENS=<3000>
 OPENROUTER_CLASSIFIER_MAX_OUTPUT_TOKENS=<500>
 OPENROUTER_SCHEDULING_MAX_OUTPUT_TOKENS=<1000>
 
 DISCORD_BOT_TOKEN=<your-discord-bot-token>
-# Optional until general-purpose Billy features are implemented.
+BILLY_ASSISTANT_ENABLED=<true>
 DISCORD_MAIN_CHANNEL_ID=<your-discord-channel-id>
+DISCORD_OWNER_USER_ID=<your-discord-user-id>
 DISCORD_EMAIL_CHANNEL_ID=<your-discord-channel-id>
 DISCORD_APPROVER_USER_IDS=<user-id-1,user-id-2>
 
@@ -207,6 +210,11 @@ LOG_LEVEL=<info>
 ```
 
 The angle-bracketed values are examples. Remove the brackets when creating `.env`.
+
+The main assistant defaults to `google/gemini-flash-latest` and does not set an
+output-token cap. OpenRouter-reported input, output, reasoning, and cost data is
+stored locally; send `assistant usage` in the main Discord channel to see the
+last 30 days and lifetime totals.
 
 `.env` is ignored by Git, as is everything in `SECRETS/`. Only `.env.example` is committed.
 
